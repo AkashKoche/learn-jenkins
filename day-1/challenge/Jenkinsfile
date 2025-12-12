@@ -1,0 +1,28 @@
+pipeline {
+    agent any
+    stages {
+        stage('Welcome') {
+            steps {
+                script {
+                    def repoUrl = 'https://github.com/AKashKoche/jenkins-mastery/day-1/challenge-1/simple-java-maven-app.git'
+                    def branchName = 'main'
+                    echo "Welcome! Starting build for repository: ${repoUrl} on branch: ${branchName}"
+                }
+            }
+        }
+        stage('Checkout Code') {
+            steps {
+                git branch: 'main', url: 'https://github.com/AkashKoche/jenkins-mastery/day-1/challenge-1/simple-java-maven-app.git'
+            }
+        }
+        stage('Archive Files') {
+        steps {
+            archiveArtifacts artifacts: '**/*.txt', fringerprint: true
+        }
+    }
+    post {
+        always {
+            echo "Challenge 1 Pipeline finished. Check the 'Artifacts on the build page!"
+        }
+    }
+}

@@ -1,0 +1,42 @@
+def runSafeDatabaseMigrations() {
+    echo "Executing safe database migration strategy"
+    
+    dir('infrastructure/database') {
+        // Pre-flight checks
+        verifyDatabaseConnectivity()
+        backupDatabases()
+        
+        // Run migrations with verification
+        try {
+            sh 'flyway migrate -configFiles=flyway.conf'
+            
+            // Verify migration success
+            verifyMigrationResults()
+            
+            // Update schema version in config map
+            updateSchemaVersion()
+            
+        } catch (Exception e) {
+            echo "Migration failed, restoring backup"
+            restoreDatabaseBackup()
+            error "Database migration failed: ${e.message}"
+        }
+    }
+}
+
+def backupDatabases() {
+    echo "Creating database backups"
+    
+    def timestamp = sh(script: 'date +%Y%m%d_%H%M%S', returnStdout: true).trim()
+    
+    sh """
+        pg_dump -h \${DB_HOST} -U \${DB_USER} \${DB_NAME} > backup_${timestamp}.sql
+        mongodump --host \${MONGO_HOST} --out backup_${timestamp}
+    """
+    
+    // Upload to secure storage
+    sh """
+        aws s3 cp backup_${timestamp}.sql s3://${PROJECT}-backups/database/
+        aws s3 cp --recursive backup_${timestamp} s3://${PROJECT}-backups/database/
+    """
+}

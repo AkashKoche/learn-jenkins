@@ -1,0 +1,117 @@
+def createEnvironmentPipeline(String environment, Map config) {
+    return {
+        pipeline {
+            agent any
+            environment {
+                ENV_NAME = environment
+                KUBE_NAMESPACE = "app-${environment}"
+                DB_URL = config.databaseUrl
+                CONFIG_SERVER = config.configServer
+            }
+            stages {
+                stage("Validate ${environment}") {
+                    steps {
+                        validateEnvironment(environment, config)
+                    }
+                }
+                stage("Deploy to ${environment}") {
+                    steps {
+                        deployToEnvironment(environment, config)
+                    }
+                }
+                stage("Smoke Test ${environment}") {
+                    steps {
+                        runSmokeTests(environment, config)
+                    }
+                }
+                stage("Scale ${environment}") {
+                    when {
+                        expression { config.autoScale != false }
+                    }
+                    steps {
+                        autoScaleEnvironment(environment, config)
+                    }
+                }
+            }
+        }
+    }
+}
+
+def deployToEnvironment(String environment, Map config) {
+    echo "Deploying to ${environment} with config: ${config}"
+    
+    // Dynamic resource allocation based on environment
+    def resources = calculateResources(environment, config)
+    
+    sh """
+        kubectl apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-${environment}
+  namespace: ${KUBE_NAMESPACE}
+spec:
+  replicas: ${resources.replicas}
+  selector:
+    matchLabels:
+      app: myapp
+      environment: ${environment}
+  template:
+    metadata:
+      labels:
+        app: myapp
+        environment: ${environment}
+    spec:
+      containers:
+      - name: app
+        image: ${env.IMAGE_TAG}
+        resources:
+          requests:
+            memory: "${resources.memory}Mi"
+            cpu: "${resources.cpu}m"
+          limits:
+            memory: "${resources.memory * 2}Mi"
+            cpu: "${resources.cpu * 2}m"
+        env:
+        - name: ENVIRONMENT
+          value: "${environment}"
+        - name: CONFIG_SERVER
+          value: "${config.configServer}"
+EOF
+    """
+}
+
+def calculateResources(String environment, Map config) {
+    def baseResources = [replicas: 2, memory: 512, cpu: 500]
+    
+    switch(environment) {
+        case 'dev':
+            return [replicas: 1, memory: 256, cpu: 250]
+        case 'staging':
+            return [replicas: 2, memory: 512, cpu: 500]
+        case 'production':
+            return [replicas: 4, memory: 1024, cpu: 1000]
+        default:
+            return baseResources
+    }
+}
+
+// Usage: Create environment-specific pipelines dynamically
+def environmentPipelines = [
+    dev: [databaseUrl: 'jdbc:postgresql://dev-db:5432/app', configServer: 'http://config-dev:8888', autoScale: false],
+    staging: [databaseUrl: 'jdbc:postgresql://staging-db:5432/app', configServer: 'http://config-staging:8888', autoScale: true],
+    production: [databaseUrl: 'jdbc:postgresql://prod-db:5432/app', configServer: 'http://config-prod:8888', autoScale: true]
+]
+
+// Create parallel deployment to multiple environments
+stage('Multi-Environment Deployment') {
+    steps {
+        script {
+            def parallelDeployments = [:]
+            environmentPipelines.each { envName, config ->
+                parallelDeployments["Deploy-${envName}"] = createEnvironmentPipeline(envName, config)
+            }
+            parallel parallelDeployments
+        }
+    }
+}

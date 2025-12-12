@@ -1,0 +1,79 @@
+pipeline {
+    agent any
+    parameters {
+        choice(name: 'TEST_TYPE', choices: ['unit', 'integration', 'all'], description: 'Test type to run')
+        booleanParam(name: 'SKIP_TESTS', defaultValue: false, description: 'Skip all tests')
+    }
+    stages {
+        stage('Discover Modules') {
+            steps {
+                script {
+                    // Discover all Maven modules in the project
+                    def modules = findFiles(glob: '**/pom.xml').collect { file ->
+                        // Get parent directory name
+                        file.path.split('/')[0]
+                    }.unique()
+                    
+                    echo "Discovered modules: ${modules}"
+                    env.DISCOVERED_MODULES = modules.join(',')
+                }
+            }
+        }
+        
+        stage('Dynamic Tests') {
+            when {
+                expression { !params.SKIP_TESTS }
+            }
+            steps {
+                script {
+                    def modules = env.DISCOVERED_MODULES.split(',').toList()
+                    def testStages = [:]
+                    
+                    modules.each { module ->
+                        testStages["Test-${module}"] = {
+                            stage("Test ${module}") {
+                                dir(module) {
+                                    switch(params.TEST_TYPE) {
+                                        case 'unit':
+                                            sh 'mvn test -Dtest=**/*Test'
+                                            break
+                                        case 'integration':
+                                            sh 'mvn verify -Dtest=**/*IT'
+                                            break
+                                        case 'all':
+                                            sh 'mvn test verify'
+                                            break
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    parallel testStages
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            script {
+                // Generate custom test report
+                def totalTests = 0
+                def failedTests = 0
+                
+                // This would parse actual test results in a real scenario
+                findFiles(glob: '**/surefire-reports/*.xml').each { file ->
+                    // Parse XML and count tests (simplified)
+                    totalTests += 10 // Mock data
+                    failedTests += sh(script: "grep -c 'failure' ${file.path} || true", returnStdout: true).trim().toInteger()
+                }
+                
+                echo "TEST SUMMARY: Total: ${totalTests}, Failed: ${failedTests}, Passed: ${totalTests - failedTests}"
+                
+                // Update build description
+                currentBuild.description = "Tests: ${totalTests - failedTests}/${totalTests} passed"
+            }
+        }
+    }
+}

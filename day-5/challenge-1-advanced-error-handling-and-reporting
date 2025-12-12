@@ -1,0 +1,137 @@
+def executeWithComprehensiveErrorHandling(Closure operation, String context) {
+    try {
+        return operation.call()
+        
+    } catch (Exception e) {
+        def diagnosis = diagnoseError(e, context)
+        logComprehensiveError(e, diagnosis, context)
+        
+        // Attempt automatic remediation for known issues
+        if (diagnosis.remediation) {
+            echo "Attempting automatic remediation: ${diagnosis.remediation}"
+            executeRemediation(diagnosis.remediation)
+        }
+        
+        // Provide helpful error message
+        error """
+        🚨 PIPELINE FAILURE IN CONTEXT: ${context}
+        
+        ERROR: ${e.message}
+        
+        DIAGNOSIS: ${diagnosis.description}
+        
+        POSSIBLE SOLUTIONS:
+        ${diagnosis.solutions.join('\n')}
+        
+        AUTOMATIC REMEDIATION ATTEMPTED: ${diagnosis.remediation ? 'YES' : 'NO'}
+        
+        Full stack trace available in console logs.
+        """
+    }
+}
+
+def diagnoseError(Exception e, String context) {
+    def errorMessage = e.message.toLowerCase()
+    def diagnosis = [
+        description: 'Unknown error',
+        solutions: ['Check console output for details'],
+        remediation: null
+    ]
+    
+    // Network-related errors
+    if (errorMessage.contains('connection') || errorMessage.contains('timeout')) {
+        diagnosis.description = 'Network connectivity issue'
+        diagnosis.solutions = [
+            'Check VPN connection',
+            'Verify proxy settings',
+            'Test network connectivity to target server',
+            'Check DNS resolution'
+        ]
+        diagnosis.remediation = 'retry_network_operation'
+    }
+    
+    // Maven dependency errors
+    else if (errorMessage.contains('dependency') || errorMessage.contains('artifact')) {
+        diagnosis.description = 'Dependency resolution failure'
+        diagnosis.solutions = [
+            'Check if artifact exists in repository',
+            'Verify repository configuration in settings.xml',
+            'Clear local Maven repository cache',
+            'Check network access to repository'
+        ]
+        diagnosis.remediation = 'clear_maven_cache'
+    }
+    
+    // Docker-related errors
+    else if (errorMessage.contains('docker') || errorMessage.contains('container')) {
+        diagnosis.description = 'Docker operation failed'
+        diagnosis.solutions = [
+            'Check Docker daemon status: systemctl status docker',
+            'Verify user has Docker permissions',
+            'Check available disk space',
+            'Restart Docker service if needed'
+        ]
+        diagnosis.remediation = 'restart_docker'
+    }
+    
+    // Memory-related errors
+    else if (errorMessage.contains('memory') || errorMessage.contains('heap') || errorMessage.contains('gc')) {
+        diagnosis.description = 'Insufficient memory or memory pressure'
+        diagnosis.solutions = [
+            'Increase Jenkins agent memory',
+            'Add Maven memory options: export MAVEN_OPTS="-Xmx2g -XX:MaxPermSize=512m"',
+            'Clean up Docker images and containers',
+            'Restart Jenkins agent'
+        ]
+        diagnosis.remediation = 'increase_memory'
+    }
+    
+    return diagnosis
+}
+
+def executeRemediation(String remediationType) {
+    switch(remediationType) {
+        case 'clear_maven_cache':
+            sh 'mvn dependency:purge-local-repository -DactTransitively=false -DreResolve=false'
+            break
+        case 'restart_docker':
+            sh 'sudo systemctl restart docker'
+            sleep 30
+            break
+        case 'increase_memory':
+            env.MAVEN_OPTS = '-Xmx2g -XX:MaxPermSize=512m'
+            break
+        case 'retry_network_operation':
+            // Will be handled by retry logic
+            break
+    }
+}
+
+def logComprehensiveError(Exception e, Map diagnosis, String context) {
+    // Log to Jenkins console
+    echo """
+    ============================================================
+    COMPREHENSIVE ERROR REPORT - ${new Date()}
+    ============================================================
+    Context: ${context}
+    Exception: ${e.class.name}
+    Message: ${e.message}
+    
+    Diagnosis: ${diagnosis.description}
+    
+    Stack Trace:
+    ${e.stackTrace.join('\n')}
+    
+    Environment Info:
+    - Jenkins: ${env.JENKINS_URL}
+    - Node: ${env.NODE_NAME}
+    - Workspace: ${env.WORKSPACE}
+    - Build: ${env.BUILD_URL}
+    ============================================================
+    """
+    
+    // Additional: Send to monitoring system, create JIRA ticket, etc.
+    if (env.BRANCH_NAME == 'main' || env.BRANCH_NAME == 'develop') {
+        createAutomatedTicket(e, diagnosis, context)
+    }
+}

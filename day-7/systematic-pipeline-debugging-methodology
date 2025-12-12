@@ -1,0 +1,60 @@
+// Debugging utility functions for systematic troubleshooting
+def debugPipeline() {
+    echo """
+    🔧 PIPELINE DEBUGGING FRAMEWORK
+    ===============================
+    1. IDENTIFY: What exactly is failing?
+    2. ISOLATE: Where in the pipeline is it failing?
+    3. INVESTIGATE: What are the root causes?
+    4. RESOLVE: Implement the fix
+    5. PREVENT: Add safeguards for the future
+    ===============================
+    """
+}
+
+def performHealthCheck() {
+    echo "Performing comprehensive pipeline health check..."
+    
+    def checks = [
+        'Jenkins Controller': checkJenkinsController(),
+        'Build Agents': checkBuildAgents(),
+        'Network Connectivity': checkNetwork(),
+        'External Services': checkExternalServices(),
+        'Resource Utilization': checkResources(),
+        'Plugin Health': checkPlugins()
+    ]
+    
+    checks.each { checkName, result ->
+        if (result.healthy) {
+            echo "✅ ${checkName}: ${result.message}"
+        } else {
+            echo "❌ ${checkName}: ${result.message}"
+            currentBuild.result = 'UNSTABLE'
+        }
+    }
+}
+
+def checkJenkinsController() {
+    try {
+        def response = sh(script: 'curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/', returnStdout: true)
+        return [
+            healthy: response == '200',
+            message: "HTTP ${response}"
+        ]
+    } catch (Exception e) {
+        return [healthy: false, message: "Unreachable: ${e.message}"]
+    }
+}
+
+def checkBuildAgents() {
+    try {
+        def agents = sh(script: 'jenkins-cli list-nodes', returnStdout: true)
+        def onlineAgents = agents.split('\n').findAll { it.contains('online') }
+        return [
+            healthy: onlineAgents.size() >= 1,
+            message: "${onlineAgents.size()} agents online"
+        ]
+    } catch (Exception e) {
+        return [healthy: false, message: "Agent check failed: ${e.message}"]
+    }
+}

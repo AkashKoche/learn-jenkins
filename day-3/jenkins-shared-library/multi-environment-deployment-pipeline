@@ -1,0 +1,140 @@
+@Library('company-shared-lib')_
+
+pipeline {
+    agent any
+    parameters {
+        choice(name: 'DEPLOY_ENV', choices: ['dev', 'staging', 'prod'], description: 'Deployment environment')
+        choice(name: 'DEPLOY_STRATEGY', choices: ['rolling', 'blue-green', 'canary'], description: 'Deployment strategy')
+        booleanParam(name: 'RUN_E2E_TESTS', defaultValue: false, description: 'Run end-to-end tests after deployment')
+    }
+    
+    stages {
+        stage('Build & Test') {
+            steps {
+                script {
+                    def buildUtils = new org.company.BuildUtils(this, env)
+                    
+                    // Build application
+                    sh 'mvn clean package -DskipTests'
+                    
+                    // Run quality analysis
+                    def qualityResults = buildUtils.analyzeCodeQuality()
+                    
+                    // Run tests if quality passed
+                    if (qualityResults.passed) {
+                        parallel(
+                            "Unit Tests": { sh 'mvn test' },
+                            "Integration Tests": { sh 'mvn verify -Dtest=**/*IT' }
+                        )
+                    }
+                    
+                    // Generate build report
+                    buildUtils.generateBuildReport(qualityResults)
+                }
+            }
+        }
+        
+        stage('Security Scan') {
+            parallel {
+                stage('Dependency Check') {
+                    steps {
+                        sh 'mvn org.owasp:dependency-check-maven:check'
+                    }
+                }
+                stage('Code Security') {
+                    steps {
+                        // Simulate security scan
+                        sh 'find . -name "*.java" -exec grep -l "password\|secret" {} \\; || true'
+                    }
+                }
+            }
+        }
+        
+        stage('Deploy to Environment') {
+            steps {
+                script {
+                    def deployUtils = load 'vars/deployApp.groovy'
+                    
+                    switch(params.DEPLOY_STRATEGY) {
+                        case 'blue-green':
+                            deployUtils.blueGreenDeploy(params.DEPLOY_ENV)
+                            break
+                        case 'canary':
+                            deployUtils.canaryDeploy(params.DEPLOY_ENV)
+                            break
+                        default:
+                            deployUtils.rollingDeploy(params.DEPLOY_ENV)
+                    }
+                }
+            }
+        }
+        
+        stage('Approval Gate') {
+            when {
+                expression { params.DEPLOY_ENV == 'prod' }
+            }
+            steps {
+                timeout(time: 2, unit: 'HOURS') {
+                    input message: 'Deploy to production?', 
+                          ok: 'Deploy', 
+                          submitterParameter: 'APPROVED_BY'
+                }
+                script {
+                    currentBuild.description = "Prod deploy approved by ${APPROVED_BY}"
+                }
+            }
+        }
+        
+        stage('Post-Deployment Tests') {
+            when {
+                expression { params.RUN_E2E_TESTS }
+            }
+            steps {
+                script {
+                    // Run smoke tests
+                    sh './run-smoke-tests.sh'
+                    
+                    // Run performance tests if in staging/prod
+                    if (params.DEPLOY_ENV in ['staging', 'prod']) {
+                        sh './run-performance-tests.sh'
+                    }
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            script {
+                // Send notifications
+                emailext (
+                    subject: "Build ${currentBuild.currentResult}: Job ${env.JOB_NAME}",
+                    body: """
+                    Build: ${env.JOB_NAME} #${env.BUILD_NUMBER}
+                    Result: ${currentBuild.currentResult}
+                    URL: ${env.BUILD_URL}
+                    """,
+                    to: 'dev-team@company.com'
+                )
+            }
+        }
+        success {
+            script {
+                // Update deployment dashboard
+                sh "curl -X POST https://deploy-dashboard.company.com/deployments/${env.BUILD_NUMBER}/success"
+            }
+        }
+        failure {
+            script {
+                // Automatic rollback on failure
+                if (params.DEPLOY_ENV == 'prod') {
+                    echo "Initiating automatic rollback..."
+                    sh './rollback-deployment.sh'
+                }
+            }
+        }
+        unstable {
+            echo "Build is unstable - check test results and quality gates"
+        }
+    }
+}

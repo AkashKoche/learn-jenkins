@@ -1,0 +1,50 @@
+pipeline {
+    agent any
+    tools {
+       maven 'M3'
+       jdk 'JDK11'
+    }
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'main', url: 'https://github.com/jenkins-docs/simple-java-maven-app.git'
+            }
+        }
+        stage('Build') {
+            steps {
+                mvn 'clean compile'
+            }
+        }
+        stage('Test') {
+            steps {
+                mvn 'test'
+            }
+            post {
+                always {
+                    junit 'target/surefire-reports/*.xml'
+                }
+            }
+        }
+        stage('Package') {
+            steps {
+                mvn 'package'
+            }
+            post {
+                success {
+                    archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+                }
+            }
+        }
+    }
+    post {
+        always {
+            echo 'Pipeline for Maven project is complete.'
+        }
+        failure {
+            echo 'The build failed! Some should look at this.'
+        }
+        fixed {
+            echo 'The build was fixed after a previous failure!'
+        }
+    }
+}

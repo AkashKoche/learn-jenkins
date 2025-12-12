@@ -1,0 +1,166 @@
+// Self-documenting pipeline with maintenance utilities
+pipeline {
+    agent any
+    options {
+        // Self-documentation options
+        timestamps()
+        ansiColor('xterm')
+    }
+    
+    parameters {
+        booleanParam(
+            name: 'GENERATE_DOCS',
+            defaultValue: false,
+            description: 'Generate pipeline documentation'
+        )
+        booleanParam(
+            name: 'RUN_HEALTH_CHECK',
+            defaultValue: true,
+            description: 'Execute pipeline health checks'
+        )
+    }
+    
+    stages {
+        stage('Health Check') {
+            when {
+                expression { params.RUN_HEALTH_CHECK }
+            }
+            steps {
+                script {
+                    runComprehensiveHealthCheck()
+                }
+            }
+        }
+        
+        stage('Documentation') {
+            when {
+                expression { params.GENERATE_DOCS }
+            }
+            steps {
+                script {
+                    generatePipelineDocumentation()
+                }
+            }
+        }
+    }
+}
+
+def generatePipelineDocumentation() {
+    echo "Generating comprehensive pipeline documentation..."
+    
+    def docs = """
+    # Pipeline Documentation: ${env.JOB_NAME}
+    
+    ## Overview
+    - **Purpose**: ${getPipelinePurpose()}
+    - **Owner**: ${getPipelineOwner()}
+    - **SLA**: ${getPipelineSLA()}
+    
+    ## Stages
+    ${generateStageDocumentation()}
+    
+    ## Configuration
+    ${generateConfigurationDocumentation()}
+    
+    ## Troubleshooting
+    ${generateTroubleshootingGuide()}
+    
+    ## Performance Characteristics
+    ${generatePerformanceDocumentation()}
+    """
+    
+    writeFile file: 'pipeline-documentation.md', text: docs
+    publishHTML([
+        allowMissing: false,
+        alwaysLinkToLastBuild: true,
+        keepAll: true,
+        reportDir: '.',
+        reportFiles: 'pipeline-documentation.md',
+        reportName: 'Pipeline Documentation'
+    ])
+}
+
+def generateTroubleshootingGuide() {
+    return """
+    ## Common Issues and Solutions
+    
+    ### Build Failures
+    1. **Dependency Resolution Issues**
+       - Symptom: Maven/NPM dependency errors
+       - Solution: Clear cache and retry
+       - Command: \`mvn dependency:purge-local-repository\`
+    
+    2. **Memory Issues**
+       - Symptom: Java heap space errors
+       - Solution: Increase memory allocation
+       - Configuration: \`MAVEN_OPTS="-Xmx4g"\`
+    
+    3. **Test Flakiness**
+       - Symptom: Intermittent test failures
+       - Solution: Implement retry mechanism
+       - Implementation: Use \`retry()\` in pipeline
+    
+    ### Performance Issues
+    1. **Slow Checkout**
+       - Solution: Implement shallow clone
+       - Configuration: \`depth: 1\` in checkout
+    
+    2. **Long Build Times**
+       - Solution: Implement parallel execution
+       - Implementation: Use \`parallel\` stages
+    
+    ### Contact Information
+    - Primary Contact: ${getPipelineOwner()}
+    - Escalation: #platform-engineering
+    - Emergency: #production-support
+    """
+}
+
+// Maintenance utilities
+def runPipelineMaintenance() {
+    echo "Running pipeline maintenance tasks..."
+    
+    parallel(
+        'Clean Workspaces': {
+            cleanOldWorkspaces()
+        },
+        'Update Plugins': {
+            checkPluginUpdates()
+        },
+        'Validate Configuration': {
+            validatePipelineConfiguration()
+        },
+        'Performance Analysis': {
+            analyzePipelinePerformance()
+        }
+    )
+}
+
+def cleanOldWorkspaces() {
+    echo "Cleaning up old workspaces..."
+    
+    // Keep only last 10 builds per branch
+    sh '''
+        find /var/jenkins_home/workspace -name "*${JOB_NAME}*" -mtime +30 -exec rm -rf {} \; || true
+    '''
+}
+
+def validatePipelineConfiguration() {
+    echo "Validating pipeline configuration..."
+    
+    def validations = [
+        'Check syntax': validatePipelineSyntax(),
+        'Check credentials': validateCredentials(),
+        'Check external dependencies': validateExternalDependencies(),
+        'Check resource availability': validateResources()
+    ]
+    
+    validations.each { checkName, result ->
+        if (result.valid) {
+            echo "✅ ${checkName}: PASS"
+        } else {
+            echo "❌ ${checkName}: FAIL - ${result.message}"
+            currentBuild.result = 'UNSTABLE'
+        }
+    }
+}

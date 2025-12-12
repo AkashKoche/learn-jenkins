@@ -1,0 +1,51 @@
+def setupCanaryAnalysis() {
+    echo "Setting up canary analysis for production deployment"
+    
+    dir('infrastructure/monitoring') {
+        // Deploy canary configuration
+        sh """
+            kubectl apply -f canary-analysis.yaml
+        """
+        
+        // Monitor canary metrics
+        def analysisDuration = 30 // minutes
+        timeout(time: analysisDuration, unit: 'MINUTES') {
+            while(true) {
+                def canaryScore = calculateCanaryScore()
+                
+                if (canaryScore < 0.95) {
+                    echo "🚨 Canary score below threshold: ${canaryScore}"
+                    rollbackCanary()
+                    error "Canary analysis failed"
+                }
+                
+                if (canaryScore >= 0.98) {
+                    echo "✅ Canary analysis passed with score: ${canaryScore}"
+                    promoteCanary()
+                    break
+                }
+                
+                echo "📊 Current canary score: ${canaryScore}"
+                sleep 60 // Check every minute
+            }
+        }
+    }
+}
+
+def calculateCanaryScore() {
+    // Query multiple metrics and calculate weighted score
+    def metrics = [
+        'error_rate': queryMetric('error_rate'),
+        'response_time': queryMetric('response_time_p95'),
+        'throughput': queryMetric('requests_per_second'),
+        'business_metrics': queryMetric('order_success_rate')
+    ]
+    
+    // Calculate weighted score (simplified)
+    def score = (metrics.error_rate * 0.3) + 
+                (metrics.response_time * 0.3) + 
+                (metrics.throughput * 0.2) + 
+                (metrics.business_metrics * 0.2)
+    
+    return score
+}

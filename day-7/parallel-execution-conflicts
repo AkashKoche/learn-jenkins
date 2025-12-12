@@ -1,0 +1,174 @@
+// Diagnostic pipeline for parallel execution issues
+def debugParallelConflicts() {
+    echo "Debugging parallel execution conflicts..."
+    
+    pipeline {
+        agent any
+        stages {
+            stage('Parallel Conflict Analysis') {
+                steps {
+                    script {
+                        // Run with conflict detection
+                        runParallelWithConflictDetection()
+                    }
+                }
+            }
+        }
+    }
+}
+
+def runParallelWithConflictDetection() {
+    def parallelStages = [:]
+    
+    // Resource-intensive stages that might conflict
+    ['Service-A', 'Service-B', 'Service-C'].each { service ->
+        parallelStages[service] = {
+            stage("Build ${service}") {
+                script {
+                    // Add resource locking and conflict detection
+                    withResourceLock("docker-daemon") {
+                        withConflictMonitoring(service) {
+                            buildService(service)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    parallel parallelStages
+}
+
+// Resource locking mechanism
+def withResourceLock(String resource, Closure body) {
+    def lockName = "resource-${resource}-${env.NODE_NAME}"
+    
+    try {
+        lock(resource: lockName, inversePrecedence: true) {
+            echo "🔒 Acquired lock for ${resource}"
+            body.call()
+        }
+    } finally {
+        echo "🔓 Released lock for ${resource}"
+    }
+}
+
+def withConflictMonitoring(String service, Closure body) {
+    def startTime = System.currentTimeMillis()
+    def conflictDetected = false
+    
+    try {
+        // Monitor for common conflict patterns
+        startConflictMonitoring(service)
+        body.call()
+    } catch (Exception e) {
+        if (isConflictRelated(e)) {
+            conflictDetected = true
+            logConflictDetails(service, e)
+            suggestConflictResolution(service, e)
+        }
+        throw e
+    } finally {
+        stopConflictMonitoring(service)
+        logExecutionTime(service, startTime, conflictDetected)
+    }
+}
+
+def isConflictRelated(Exception e) {
+    def conflictIndicators = [
+        'port already in use',
+        'file lock',
+        'resource busy',
+        'address already in use',
+        'permission denied',
+        'conflict',
+        'lock'
+    ]
+    
+    return conflictIndicators.any { indicator ->
+        e.message.toLowerCase().contains(indicator)
+    }
+}
+
+def suggestConflictResolution(String service, Exception e) {
+    echo """
+    💡 CONFLICT RESOLUTION SUGGESTIONS for ${service}:
+    ===================================================
+    Error: ${e.message}
+    
+    Potential Solutions:
+    1. Implement resource locking for shared resources
+    2. Use unique ports for each parallel service
+    3. Add retry logic with exponential backoff
+    4. Implement mutual exclusion for file operations
+    5. Use temporary directories with unique names
+    6. Consider sequential execution for conflicting operations
+    """
+    
+    // Generate specific resolution based on error type
+    if (e.message.contains('port')) {
+        suggestPortConflictResolution()
+    } else if (e.message.contains('file lock')) {
+        suggestFileLockResolution()
+    }
+}
+
+def suggestPortConflictResolution() {
+    echo """
+    🚀 PORT CONFLICT RESOLUTION:
+    - Use dynamic port allocation:
+      def port = findAvailablePort()
+    - Implement port pooling
+    - Use container isolation with port mapping
+    - Add port conflict detection and retry
+    """
+}
+
+// Advanced parallel execution with conflict avoidance
+def optimizedParallelExecution() {
+    def parallelStages = [:]
+    def usedPorts = [:]
+    def fileLocks = [:]
+    
+    ['Service-A', 'Service-B', 'Service-C'].each { service ->
+        parallelStages[service] = {
+            stage("Optimized Build ${service}") {
+                script {
+                    // Assign unique resources
+                    def assignedPort = allocateUniquePort(usedPorts, service)
+                    def workspace = createUniqueWorkspace(service)
+                    
+                    try {
+                        withEnv(["SERVICE_PORT=${assignedPort}"]) {
+                            dir(workspace) {
+                                buildServiceWithIsolation(service, assignedPort)
+                            }
+                        }
+                    } finally {
+                        // Cleanup
+                        releasePort(assignedPort, usedPorts)
+                        cleanupWorkspace(workspace)
+                    }
+                }
+            }
+        }
+    }
+    
+    parallel parallelStages
+}
+
+def allocateUniquePort(usedPorts, service) {
+    def basePort = 8080
+    def maxAttempts = 100
+    
+    for (int i = 0; i < maxAttempts; i++) {
+        def candidatePort = basePort + i
+        if (!usedPorts.containsKey(candidatePort)) {
+            usedPorts[candidatePort] = service
+            echo "Allocated port ${candidatePort} to ${service}"
+            return candidatePort
+        }
+    }
+    
+    error "Could not allocate unique port for ${service} after ${maxAttempts} attempts"
+}

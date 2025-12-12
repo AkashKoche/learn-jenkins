@@ -1,0 +1,118 @@
+// Performance-optimized pipeline template
+def optimizedPipeline() {
+    pipeline {
+        agent any
+        options {
+            skipDefaultCheckout true // Manual checkout for optimization
+            retry(2) // Automatic retry on transient failures
+        }
+        
+        stages {
+            stage('Optimized Checkout') {
+                steps {
+                    script {
+                        // Shallow clone for faster checkout
+                        checkout([
+                            $class: 'GitSCM',
+                            branches: [[name: env.BRANCH_NAME]],
+                            extensions: [
+                                [
+                                    $class: 'CloneOption',
+                                    depth: 1,
+                                    shallow: true,
+                                    timeout: 10
+                                ],
+                                [
+                                    $class: 'SparseCheckoutPaths',
+                                    sparseCheckoutPaths: [
+                                        // Only checkout needed paths
+                                        [path: 'services/'],
+                                        [path: 'pom.xml'],
+                                        [path: 'Jenkinsfile']
+                                    ]
+                                ]
+                            ],
+                            userRemoteConfigs: [[url: env.GIT_URL]]
+                        ])
+                    }
+                }
+            }
+            
+            stage('Dependency Cache') {
+                steps {
+                    script {
+                        restoreDependencyCache()
+                    }
+                }
+            }
+            
+            stage('Parallel Build & Test') {
+                parallel {
+                    stage('Backend Services') {
+                        steps {
+                            script {
+                                buildBackendInParallel()
+                            }
+                        }
+                    }
+                    stage('Frontend Apps') {
+                        steps {
+                            script {
+                                buildFrontendInParallel()
+                            }
+                        }
+                    }
+                    stage('Documentation') {
+                        steps {
+                            script {
+                                generateDocumentation()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        post {
+            always {
+                script {
+                    saveDependencyCache()
+                    cleanupResources()
+                    generatePerformanceReport()
+                }
+            }
+        }
+    }
+}
+
+def restoreDependencyCache() {
+    echo "Restoring dependency cache for performance..."
+    
+    // Maven dependency cache
+    sh '''
+        if [ -f /tmp/maven-cache.tar.gz ]; then
+            tar -xzf /tmp/maven-cache.tar.gz -C ~/.m2/repository
+            echo "Maven cache restored"
+        fi
+    '''
+    
+    // npm cache
+    sh '''
+        if [ -f /tmp/npm-cache.tar.gz ]; then
+            tar -xzf /tmp/npm-cache.tar.gz -C .npm
+            echo "npm cache restored"
+        fi
+    '''
+}
+
+def saveDependencyCache() {
+    echo "Saving dependency cache for future builds..."
+    
+    // Only save cache on successful main branch builds
+    if (currentBuild.result == 'SUCCESS' && env.BRANCH_NAME == 'main') {
+        sh '''
+            tar -czf /tmp/maven-cache.tar.gz -C ~/.m2/repository .
+            tar -czf /tmp/npm-cache.tar.gz -C .npm .
+        '''
+    }
+}

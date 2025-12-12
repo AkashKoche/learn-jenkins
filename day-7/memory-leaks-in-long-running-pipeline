@@ -1,0 +1,137 @@
+// Diagnostic pipeline for memory issues
+pipeline {
+    agent any
+    options {
+        timeout(time: 6, unit: 'HOURS')
+    }
+    environment {
+        MAX_MEMORY_MB = 4096
+    }
+    stages {
+        stage('Memory Monitoring') {
+            steps {
+                script {
+                    // Start memory monitoring in background
+                    startMemoryMonitoring()
+                    
+                    // Your actual pipeline steps here
+                    executeLongRunningProcess()
+                }
+            }
+        }
+    }
+    post {
+        always {
+            script {
+                stopMemoryMonitoring()
+                analyzeMemoryUsage()
+            }
+        }
+    }
+}
+
+def startMemoryMonitoring() {
+    // Start monitoring Java memory usage
+    sh """
+        while true; do
+            echo "\$(date): Memory usage - \$(ps -o rss= -p \$\$) KB" >> memory_usage.log
+            sleep 30
+        done &
+        echo \$! > memory_monitor.pid
+    """
+    
+    // Monitor Jenkins controller memory
+    sh """
+        jenkins_mem_pid=\$(ps aux | grep jenkins | grep -v grep | awk '{print \$2}')
+        if [ ! -z "\$jenkins_mem_pid" ]; then
+            while true; do
+                echo "\$(date): Jenkins memory - \$(ps -o rss= -p \$jenkins_mem_pid) KB" >> jenkins_memory.log
+                sleep 30
+            done &
+            echo \$! > jenkins_memory_monitor.pid
+        fi
+    """
+}
+
+def stopMemoryMonitoring() {
+    sh '''
+        if [ -f memory_monitor.pid ]; then
+            kill $(cat memory_monitor.pid) 2>/dev/null || true
+            rm -f memory_monitor.pid
+        fi
+        if [ -f jenkins_memory_monitor.pid ]; then
+            kill $(cat jenkins_memory_monitor.pid) 2>/dev/null || true
+            rm -f jenkins_memory_monitor.pid
+        fi
+    '''
+}
+
+def analyzeMemoryUsage() {
+    // Analyze memory patterns
+    def memoryLog = readFile('memory_usage.log')
+    def memoryValues = memoryLog.readLines().collect { line ->
+        line.find(/Memory usage - (\d+) KB/) { match, kb -> kb as Integer }
+    }.findAll { it != null }
+    
+    if (memoryValues) {
+        def initial = memoryValues.first()
+        def peak = memoryValues.max()
+        def growth = ((peak - initial) / initial * 100).round(2)
+        
+        echo "Memory Analysis: Initial=${initial}KB, Peak=${peak}KB, Growth=${growth}%"
+        
+        if (growth > 100) {
+            echo "🚨 SIGNIFICANT MEMORY GROWTH DETECTED: ${growth}%"
+            echo "Potential memory leak in pipeline steps"
+            
+            // Identify problematic stages
+            identifyMemoryIntensiveStages()
+        }
+    }
+    
+    archiveArtifacts artifacts: 'memory_usage.log,jenkins_memory.log'
+}
+
+def identifyMemoryIntensiveStages() {
+    echo "Common memory leak sources in Jenkins pipelines:"
+    echo "1. Large file operations without cleanup"
+    echo "2. Accumulating large data structures in Groovy variables"
+    echo "3. Docker container buildup without pruning"
+    echo "4. Maven dependency resolution with large repositories"
+    echo "5. Parallel stages with shared resource contention"
+}
+
+// Memory-efficient alternative implementations
+def memoryEfficientFileProcessing() {
+    echo "Implementing memory-efficient file processing..."
+    
+    // BAD: Loading entire file into memory
+    // def largeFile = readFile('huge-file.log')
+    // def lines = largeFile.split('\n')
+    
+    // GOOD: Stream processing
+    sh '''
+        # Process file in chunks without loading entirely into memory
+        while IFS= read -r line; do
+            echo "Processing: $line" >> processed_output.log
+        done < huge-file.log
+    '''
+}
+
+def efficientDataStructures() {
+    echo "Using efficient data structures..."
+    
+    // BAD: Accumulating large lists in memory
+    // def allItems = []
+    // (1..1000000).each { allItems << "item_$it" }
+    
+    // GOOD: Stream processing or batch processing
+    def batchSize = 1000
+    (1..1000000).each { index ->
+        if (index % batchSize == 0) {
+            processBatch(index - batchSize + 1, index)
+            // Explicit garbage collection hint (use cautiously)
+            System.gc()
+        }
+    }
+}

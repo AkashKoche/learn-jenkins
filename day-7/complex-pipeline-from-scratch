@@ -1,0 +1,173 @@
+// Complete enterprise-ready pipeline template
+def createEnterprisePipeline(Map config) {
+    return {
+        pipeline {
+            agent any
+            options {
+                timeout(time: config.timeoutHours, unit: 'HOURS')
+                buildDiscarder(logRotator(
+                    numToKeepStr: config.buildsToKeep,
+                    artifactNumToKeepStr: config.artifactsToKeep
+                ))
+                disableConcurrentBuilds()
+                parallelsAlwaysFailFast()
+            }
+            
+            environment {
+                // Dynamic environment setup
+                APP_VERSION = generateVersion()
+                BUILD_TIMESTAMP = sh(script: 'date -u +"%Y-%m-%dT%H:%M:%SZ"', returnStdout: true).trim()
+            }
+            
+            parameters {
+                choice(
+                    name: 'DEPLOY_STRATEGY',
+                    choices: config.deploymentStrategies,
+                    description: 'Select deployment strategy'
+                )
+                booleanParam(
+                    name: 'FULL_TEST_SUITE',
+                    defaultValue: true,
+                    description: 'Run full test suite'
+                )
+                booleanParam(
+                    name: 'SECURITY_SCAN',
+                    defaultValue: true,
+                    description: 'Execute security scans'
+                )
+            }
+            
+            stages {
+                stage('Pre-Flight Check') {
+                    steps {
+                        script {
+                            runPreFlightChecks(config)
+                        }
+                    }
+                }
+                
+                stage('Quality Gate') {
+                    parallel {
+                        stage('Code Quality') {
+                            steps {
+                                script {
+                                    runCodeQualityChecks()
+                                }
+                            }
+                        }
+                        stage('Security Scan') {
+                            when {
+                                expression { params.SECURITY_SCAN }
+                            }
+                            steps {
+                                script {
+                                    runSecurityScans()
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                stage('Build & Test') {
+                    parallel {
+                        stage('Compile') {
+                            steps {
+                                script {
+                                    compileApplication()
+                                }
+                            }
+                        }
+                        stage('Unit Tests') {
+                            steps {
+                                script {
+                                    runUnitTests()
+                                }
+                            }
+                        }
+                        stage('Integration Tests') {
+                            when {
+                                expression { params.FULL_TEST_SUITE }
+                            }
+                            steps {
+                                script {
+                                    runIntegrationTests()
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                stage('Deploy') {
+                    steps {
+                        script {
+                            deployWithStrategy(params.DEPLOY_STRATEGY)
+                        }
+                    }
+                }
+                
+                stage('Post-Deployment') {
+                    parallel {
+                        stage('Smoke Tests') {
+                            steps {
+                                script {
+                                    runSmokeTests()
+                                }
+                            }
+                        }
+                        stage('Performance Tests') {
+                            steps {
+                                script {
+                                    runPerformanceTests()
+                                }
+                            }
+                        }
+                        stage('Health Checks') {
+                            steps {
+                                script {
+                                    runHealthChecks()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            post {
+                always {
+                    script {
+                        generateComprehensiveReport(config)
+                        cleanupResources()
+                    }
+                }
+                success {
+                    script {
+                        notifySuccess()
+                        updateDashboard()
+                    }
+                }
+                failure {
+                    script {
+                        notifyFailure()
+                        if (config.autoRollback) {
+                            triggerRollback()
+                        }
+                    }
+                }
+                unstable {
+                    script {
+                        notifyUnstable()
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Usage example
+def productionPipeline = createEnterprisePipeline([
+    timeoutHours: 2,
+    buildsToKeep: '50',
+    artifactsToKeep: '20',
+    deploymentStrategies: ['blue-green', 'canary', 'rolling'],
+    autoRollback: true
+])

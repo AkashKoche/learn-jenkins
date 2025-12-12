@@ -1,0 +1,22 @@
+def runSecurityScans() {
+    parallel(
+        'SAST Scan': {
+            sh 'mvn org.sonarsource.scanner.maven:sonar-maven-plugin:sonar -Dsonar.host.url=$SONARQUBE_URL'
+        },
+        'Dependency Check': {
+            sh 'mvn org.owasp:dependency-check-maven:check -Dformat=ALL'
+            dependencyCheckPublisher(
+                pattern: '**/dependency-check-report.xml',
+                unstableTotalHigh: 0,
+                unstableTotalNormal: 5,
+                failedTotalHigh: 1
+            )
+        },
+        'Container Scanning': {
+            sh 'trivy image $IMAGE_TAG --exit-code 1 --severity HIGH,CRITICAL'
+        },
+        'Secrets Detection': {
+            sh 'gitleaks detect --source . --verbose --redact'
+        }
+    )
+}

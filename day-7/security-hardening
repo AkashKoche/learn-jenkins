@@ -1,0 +1,104 @@
+// Secure pipeline template
+pipeline {
+    agent any
+    options {
+        // Security options
+        disableConcurrentBuilds()
+        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '50'))
+        
+        // Security scanning
+        dependencyCheckPublisher(
+            pattern: '**/dependency-check-report.xml',
+            unstableTotalHigh: 0,
+            failedTotalHigh: 1
+        )
+    }
+    
+    // Environment security
+    environment {
+        // Never store secrets in plain text
+        DOCKER_REGISTRY_CREDENTIALS = credentials('docker-registry-creds')
+        SLACK_WEBHOOK = credentials('slack-webhook-url')
+        SONAR_TOKEN = credentials('sonar-token')
+    }
+    
+    parameters {
+        // Secure parameter handling
+        choice(
+            name: 'DEPLOY_ENV',
+            choices: ['dev', 'staging', 'prod'],
+            description: 'Deployment environment'
+        )
+        booleanParam(
+            name: 'CONFIRM_DEPLOYMENT',
+            defaultValue: false,
+            description: 'Confirm you have approval for this deployment'
+        )
+    }
+    
+    stages {
+        stage('Security Scan') {
+            steps {
+                script {
+                    runComprehensiveSecurityScans()
+                }
+            }
+        }
+        
+        stage('Build') {
+            steps {
+                script {
+                    secureBuildProcess()
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            script {
+                securityCleanup()
+                auditPipelineExecution()
+            }
+        }
+    }
+}
+
+def runComprehensiveSecurityScans() {
+    parallel(
+        'SAST': {
+            withSonarQubeEnv('sonar-server') {
+                sh 'mvn sonar:sonar -Dsonar.security.inventory=true'
+            }
+        },
+        'Dependency Scan': {
+            sh 'mvn org.owasp:dependency-check-maven:check'
+        },
+        'Container Scan': {
+            sh 'trivy image --exit-code 1 --severity HIGH,CRITICAL ${IMAGE_NAME}'
+        },
+        'Secrets Detection': {
+            sh 'git secrets --scan'
+        }
+    )
+}
+
+def secureBuildProcess() {
+    // Principle of least privilege
+    withCredentials([
+        usernamePassword(
+            credentialsId: 'build-user',
+            usernameVariable: 'BUILD_USER',
+            passwordVariable: 'BUILD_PASSWORD'
+        )
+    ]) {
+        // Use non-root user in containers
+        sh '''
+            docker build \
+                --build-arg USER_ID=$(id -u) \
+                --build-arg GROUP_ID=$(id -g) \
+                -t ${IMAGE_NAME} .
+        '''
+    }
+}

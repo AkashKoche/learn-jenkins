@@ -1,0 +1,120 @@
+// Comprehensive monitoring setup
+def setupPipelineMonitoring() {
+    pipeline {
+        agent any
+        stages {
+            stage('Build') {
+                steps {
+                    script {
+                        withMonitoring('build-stage') {
+                            buildApplication()
+                        }
+                    }
+                }
+            }
+        }
+        post {
+            always {
+                script {
+                    emitPipelineMetrics()
+                    checkPipelineHealth()
+                    sendIntelligentAlerts()
+                }
+            }
+        }
+    }
+}
+
+def withMonitoring(String stageName, Closure body) {
+    def startTime = System.currentTimeMillis()
+    def success = false
+    
+    try {
+        emitMetric("pipeline.stage.start", 1, ["stage": stageName])
+        body.call()
+        success = true
+        emitMetric("pipeline.stage.success", 1, ["stage": stageName])
+    } catch (Exception e) {
+        emitMetric("pipeline.stage.failure", 1, ["stage": stageName, "error": e.getClass().getSimpleName()])
+        throw e
+    } finally {
+        def duration = System.currentTimeMillis() - startTime
+        emitMetric("pipeline.stage.duration", duration, ["stage": stageName])
+    }
+}
+
+def emitPipelineMetrics() {
+    def metrics = [
+        "pipeline.build.duration": currentBuild.duration,
+        "pipeline.build.result": currentBuild.currentResult == 'SUCCESS' ? 1 : 0,
+        "pipeline.build.number": currentBuild.number
+    ]
+    
+    metrics.each { metricName, value ->
+        emitMetric(metricName, value)
+    }
+    
+    // Custom business metrics
+    emitBusinessMetrics()
+}
+
+def sendIntelligentAlerts() {
+    def alertConfig = [
+        onFailure: true,
+        onRecovery: true,
+        onDurationExceeded: 3600000, // 1 hour
+        onFlakyTest: true
+    ]
+    
+    switch(currentBuild.currentResult) {
+        case 'SUCCESS':
+            if (previousBuild?.result != 'SUCCESS') {
+                sendRecoveryAlert()
+            }
+            break
+        case 'FAILURE':
+            sendFailureAlert()
+            break
+        case 'UNSTABLE':
+            sendUnstableAlert()
+            break
+    }
+    
+    // Duration-based alerts
+    if (currentBuild.duration > alertConfig.onDurationExceeded) {
+        sendDurationAlert()
+    }
+}
+
+def sendFailureAlert() {
+    def failureAnalysis = analyzeFailure()
+    
+    def message = """
+    🚨 PIPELINE FAILURE ALERT
+    ========================
+    Pipeline: ${env.JOB_NAME}
+    Build: #${env.BUILD_NUMBER}
+    Branch: ${env.BRANCH_NAME}
+    Failed Stage: ${failureAnalysis.failedStage}
+    Error: ${failureAnalysis.errorSummary}
+    
+    🔧 RECOMMENDED ACTIONS:
+    ${failureAnalysis.suggestedActions.join('\n')}
+    
+    📊 ADDITIONAL CONTEXT:
+    - Duration: ${currentBuild.durationString}
+    - Previous Build: ${previousBuild?.result ?: 'N/A'}
+    - Console: ${env.BUILD_URL}console
+    """
+    
+    slackSend(
+        channel: '#pipeline-alerts',
+        message: message,
+        color: 'danger'
+    )
+    
+    // Create JIRA ticket for critical failures
+    if (failureAnalysis.isCritical) {
+        createAutomatedJiraTicket(failureAnalysis)
+    }
+}

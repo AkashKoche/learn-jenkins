@@ -1,0 +1,156 @@
+pipeline {
+    agent any
+    options {
+        timeout(time: 2, unit: 'HOURS')
+        timestamps()
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+    }
+    stages {
+        stage('Restore Cache') {
+            steps {
+                script {
+                    // Intelligent dependency caching
+                    restoreMavenCache()
+                    restoreNodeCache()
+                }
+            }
+        }
+        stage('Build & Test') {
+            parallel {
+                stage('Backend Services') {
+                    steps {
+                        script {
+                            def serviceStages = [:]
+                            ['user-service', 'order-service', 'payment-service'].each { service ->
+                                serviceStages[service] = {
+                                    buildAndTestService(service)
+                                }
+                            }
+                            parallel serviceStages
+                        }
+                    }
+                }
+                stage('Frontend Apps') {
+                    steps {
+                        script {
+                            def appStages = [:]
+                            ['admin-ui', 'customer-ui'].each { app ->
+                                appStages[app] = {
+                                    buildAndTestApp(app)
+                                }
+                            }
+                            parallel appStages
+                        }
+                    }
+                }
+            }
+        }
+        stage('Integration Tests') {
+            steps {
+                script {
+                    runIntegrationTestsInParallel()
+                }
+            }
+        }
+    }
+    post {
+        always {
+            script {
+                saveBuildCache()
+                generatePerformanceReport()
+            }
+        }
+    }
+}
+
+// Advanced caching implementation
+def restoreMavenCache() {
+    def cacheKey = generateMavenCacheKey()
+    
+    try {
+        sh """
+            if [ -f /tmp/maven-cache/${cacheKey}.tar.gz ]; then
+                echo "Restoring Maven cache..."
+                tar -xz -f /tmp/maven-cache/${cacheKey}.tar.gz -C ~/.m2/repository
+            else
+                echo "No cache found for key: ${cacheKey}"
+            fi
+        """
+    } catch (Exception e) {
+        echo "Cache restoration failed: ${e.message}"
+    }
+}
+
+def generateMavenCacheKey() {
+    // Create cache key based on pom.xml checksum and Java version
+    def pomHash = sh(
+        script: "sha256sum pom.xml | cut -d' ' -f1",
+        returnStdout: true
+    ).trim()
+    
+    def javaVersion = sh(
+        script: "java -version 2>&1 | head -1 | sha256sum | cut -d' ' -f1",
+        returnStdout: true
+    ).trim()
+    
+    return "${pomHash}-${javaVersion}".take(40)
+}
+
+def saveBuildCache() {
+    def cacheKey = generateMavenCacheKey()
+    
+    sh """
+        mkdir -p /tmp/maven-cache
+        tar -cz -f /tmp/maven-cache/${cacheKey}.tar.gz -C ~/.m2/repository .
+        echo "Cache saved with key: ${cacheKey}"
+    """
+}
+
+// Intelligent test splitting for parallel execution
+def runIntegrationTestsInParallel() {
+    def testClasses = discoverTestClasses()
+    def testGroups = splitTestsForParallel(testClasses, 4) // Split into 4 groups
+    
+    def parallelStages = [:]
+    testGroups.eachWithIndex { group, index ->
+        parallelStages["Test-Group-${index}"] = {
+            runTestGroup(group, index)
+        }
+    }
+    
+    parallel parallelStages
+}
+
+def discoverTestClasses() {
+    def testClasses = sh(
+        script: "find src/test/java -name '*Test.java' | sed 's|src/test/java/||' | sed 's|.java||' | sed 's|/|.|g'",
+        returnStdout: true
+    ).trim().split('\n')
+    
+    return testClasses.toList()
+}
+
+def splitTestsForParallel(List testClasses, int groups) {
+    def result = []
+    def groupSize = (testClasses.size() + groups - 1) / groups as int
+    
+    for (int i = 0; i < groups; i++) {
+        def start = i * groupSize
+        def end = Math.min(start + groupSize, testClasses.size())
+        if (start < testClasses.size()) {
+            result << testClasses[start..<end]
+        }
+    }
+    
+    return result
+}
+
+def runTestGroup(List testClasses, int groupId) {
+    def testList = testClasses.join(',')
+    
+    sh """
+        mvn test -Dtest=${testList} \
+                 -Dgroups=integration \
+                 -DfailIfNoTests=false
+    """
+}

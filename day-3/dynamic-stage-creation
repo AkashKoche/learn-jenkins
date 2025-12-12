@@ -1,0 +1,28 @@
+pipeline {
+    agent any
+    stages {
+        stage('Setup') {
+            steps {
+                script {
+                    // Define environments dynamically
+                    def environments = ['dev', 'staging', 'prod']
+                    def parallelStages = [:]
+                    
+                    environments.each { env ->
+                        parallelStages["Build-${env}"] = {
+                            stage("Build for ${env}") {
+                                echo "Building for environment: ${env}"
+                                // Dynamic version based on environment
+                                def version = env == 'prod' ? '1.0.0' : "1.0.0-${env}-SNAPSHOT"
+                                sh "mvn clean package -Dversion=${version} -Denvironment=${env}"
+                            }
+                        }
+                    }
+                    
+                    // Execute all builds in parallel
+                    parallel parallelStages
+                }
+            }
+        }
+    }
+}

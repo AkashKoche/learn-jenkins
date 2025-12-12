@@ -1,0 +1,678 @@
+// Jenkinsfile in root of microservices-platform
+properties([
+    pipelineTriggers([
+        [
+            $class: 'GitHubPushTrigger',
+            triggerOnEvents: [
+                [
+                    $class: 'GitHubPushCause',
+                    deleteBranch: true
+                ]
+            ]
+        ]
+    ]),
+    parameters([
+        choice(
+            name: 'DEPLOY_STRATEGY',
+            choices: ['canary', 'blue-green', 'rolling'],
+            description: 'Deployment strategy for production'
+        ),
+        booleanParam(
+            name: 'RUN_E2E_TESTS',
+            defaultValue: true,
+            description: 'Execute end-to-end tests'
+        ),
+        booleanParam(
+            name: 'PERFORMANCE_TEST',
+            defaultValue: false,
+            description: 'Run performance tests'
+        )
+    ])
+])
+
+pipeline {
+    agent none
+    options {
+        timeout(time: 3, unit: 'HOURS')
+        timestamps()
+        buildDiscarder(logRotator(numToKeepStr: '20', artifactNumToKeepStr: '10'))
+        disableConcurrentBuilds()
+    }
+    environment {
+        REGISTRY = 'harbor.company.com'
+        PROJECT = 'ecommerce-platform'
+        KUBE_CONTEXT = 'production-cluster'
+        SLACK_CHANNEL = '#ci-cd-alerts'
+    }
+    stages {
+        stage('Environment Setup') {
+            agent any
+            steps {
+                script {
+                    // Determine deployment scope based on changes
+                    env.CHANGED_SERVICES = discoverChangedServices()
+                    env.IS_RELEASE = env.BRANCH_NAME == 'main' || env.BRANCH_NAME.startsWith('release/')
+                    env.VERSION = generateVersion()
+                    
+                    echo """
+                    🚀 Starting Pipeline Execution
+                    =============================
+                    Branch: ${env.BRANCH_NAME}
+                    Version: ${env.VERSION}
+                    Changed Services: ${env.CHANGED_SERVICES ?: 'All services (root changes)'}
+                    Release Build: ${env.IS_RELEASE}
+                    =============================
+                    """
+                }
+            }
+        }
+        
+        stage('Parallel Build & Test') {
+            failFast false
+            parallel {
+                stage('Backend Services') {
+                    steps {
+                        script {
+                            def serviceBuilds = [:]
+                            def servicesToBuild = env.CHANGED_SERVICES ?: getAllBackendServices()
+                            
+                            servicesToBuild.each { service ->
+                                serviceBuilds["Build-${service}"] = {
+                                    buildBackendService(service)
+                                }
+                            }
+                            parallel serviceBuilds
+                        }
+                    }
+                }
+                
+                stage('Frontend Applications') {
+                    when {
+                        anyOf {
+                            expression { env.CHANGED_SERVICES == null }
+                            expression { hasFrontendChanges() }
+                        }
+                    }
+                    steps {
+                        script {
+                            def frontendBuilds = [:]
+                            ['admin-ui', 'customer-ui'].each { app ->
+                                frontendBuilds["Build-${app}"] = {
+                                    buildFrontendApp(app)
+                                }
+                            }
+                            parallel frontendBuilds
+                        }
+                    }
+                }
+                
+                stage('Infrastructure Validation') {
+                    steps {
+                        script {
+                            validateInfrastructure()
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Security & Compliance') {
+            parallel {
+                stage('SAST & Code Quality') {
+                    steps {
+                        script {
+                            runSecurityScans()
+                        }
+                    }
+                }
+                stage('Container Security') {
+                    steps {
+                        script {
+                            scanContainerImages()
+                        }
+                    }
+                }
+                stage('License Compliance') {
+                    steps {
+                        script {
+                            checkLicenseCompliance()
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Integration Tests') {
+            when {
+                expression { params.RUN_E2E_TESTS }
+            }
+            steps {
+                script {
+                    runIntegrationTests()
+                }
+            }
+        }
+        
+        stage('Deploy to Staging') {
+            when {
+                expression { env.IS_RELEASE }
+            }
+            agent { label 'k8s-deployer' }
+            steps {
+                script {
+                    deployToEnvironment('staging')
+                    runStagingValidation()
+                }
+            }
+        }
+        
+        stage('Performance Tests') {
+            when {
+                expression { params.PERFORMANCE_TEST && env.IS_RELEASE }
+            }
+            steps {
+                script {
+                    runPerformanceTests()
+                }
+            }
+        }
+        
+        stage('Approval Gate') {
+            when {
+                expression { env.IS_RELEASE }
+            }
+            steps {
+                script {
+                    timeout(time: 4, unit: 'HOURS') {
+                        input(
+                            message: 'Deploy to production?',
+                            ok: 'Deploy',
+                            submitterParameter: 'APPROVER',
+                            parameters: [
+                                choice(
+                                    name: 'DEPLOY_WINDOW',
+                                    choices: ['immediate', 'business-hours', 'after-hours'],
+                                    description: 'When to deploy'
+                                ),
+                                string(
+                                    name: 'RELEASE_NOTES',
+                                    defaultValue: '',
+                                    description: 'Release notes for this deployment'
+                                )
+                            ]
+                        )
+                    }
+                    env.DEPLOY_APPROVER = APPROVER
+                    env.RELEASE_NOTES = RELEASE_NOTES
+                }
+            }
+        }
+        
+        stage('Production Deployment') {
+            when {
+                expression { env.IS_RELEASE }
+            }
+            agent { label 'k8s-deployer' }
+            steps {
+                script {
+                    deployToEnvironment('production')
+                    monitorDeploymentHealth()
+                }
+            }
+        }
+        
+        stage('Post-Deployment') {
+            when {
+                expression { env.IS_RELEASE }
+            }
+            parallel {
+                stage('Smoke Tests') {
+                    steps {
+                        script {
+                            runProductionSmokeTests()
+                        }
+                    }
+                }
+                stage('Database Migration') {
+                    steps {
+                        script {
+                            runDatabaseMigrations()
+                        }
+                    }
+                }
+                stage('Feature Flag Activation') {
+                    steps {
+                        script {
+                            activateFeatureFlags()
+                        }
+                    }
+                }
+            }
+        }
+    }
+    post {
+        always {
+            script {
+                generateComprehensiveReport()
+                cleanupResources()
+            }
+        }
+        success {
+            script {
+                notifySuccess()
+                if (env.IS_RELEASE) {
+                    createReleaseTag()
+                }
+            }
+        }
+        failure {
+            script {
+                notifyFailure()
+                if (env.IS_RELEASE) {
+                    triggerRollbackProcedure()
+                }
+            }
+        }
+        unstable {
+            script {
+                notifyUnstable()
+            }
+        }
+    }
+}
+
+// ========== CORE IMPLEMENTATION FUNCTIONS ==========
+
+def discoverChangedServices() {
+    try {
+        if (env.BRANCH_NAME == 'main') {
+            // For main branch, check what changed since last successful build
+            def lastCommit = sh(
+                script: "git log --oneline -n 1 --pretty=format:'%h'",
+                returnStdout: true
+            ).trim()
+            
+            def changedFiles = sh(
+                script: "git diff --name-only ${lastCommit}~1 ${lastCommit}",
+                returnStdout: true
+            ).trim().split('\n')
+        } else {
+            // For feature branches, compare with main
+            def changedFiles = sh(
+                script: "git diff --name-only origin/main...HEAD",
+                returnStdout: true
+            ).trim().split('\n')
+        }
+        
+        def services = []
+        changedFiles.each { file ->
+            if (file.startsWith('services/')) {
+                def service = file.split('/')[1]
+                if (service && !services.contains(service)) {
+                    services << service
+                }
+            }
+        }
+        
+        return services ? services.join(',') : null
+        
+    } catch (Exception e) {
+        echo "Could not determine changed services: ${e.message}"
+        return null
+    }
+}
+
+def buildBackendService(String serviceName) {
+    dir("services/${serviceName}") {
+        try {
+            // Build container image
+            def imageTag = "${REGISTRY}/${PROJECT}/${serviceName}:${env.VERSION}"
+            
+            echo "Building ${serviceName} with tag: ${imageTag}"
+            
+            // Build and test
+            sh """
+                mvn clean package -DskipTests=false \
+                    -Dmaven.test.failure.ignore=false \
+                    -Pci,coverage
+            """
+            
+            // Build Docker image
+            sh """
+                docker build -t ${imageTag} .
+                docker push ${imageTag}
+            """
+            
+            // Store build info
+            env["${serviceName}_IMAGE"] = imageTag
+            env["${serviceName}_BUILD_STATUS"] = "SUCCESS"
+            
+            // Archive test results
+            junit 'target/surefire-reports/*.xml'
+            
+            // Code coverage
+            publishHTML([
+                allowMissing: false,
+                alwaysLinkToLastBuild: true,
+                keepAll: true,
+                reportDir: 'target/site/jacoco',
+                reportFiles: 'index.html',
+                reportName: "${serviceName} Coverage"
+            ])
+            
+        } catch (Exception e) {
+            env["${serviceName}_BUILD_STATUS"] = "FAILED"
+            error "Failed to build ${serviceName}: ${e.message}"
+        }
+    }
+}
+
+def buildFrontendApp(String appName) {
+    dir("frontend/${appName}") {
+        try {
+            echo "Building frontend application: ${appName}"
+            
+            // Install dependencies (with caching)
+            sh 'npm ci --cache .npm --prefer-offline'
+            
+            // Build application
+            sh 'npm run build:prod'
+            
+            // Run tests
+            sh 'npm test -- --coverage --watchAll=false'
+            
+            // Build Docker image
+            def imageTag = "${REGISTRY}/${PROJECT}/${appName}:${env.VERSION}"
+            sh """
+                docker build -t ${imageTag} .
+                docker push ${imageTag}
+            """
+            
+            env["${appName}_IMAGE"] = imageTag
+            
+            // Archive build artifacts
+            publishHTML([
+                allowMissing: false,
+                alwaysLinkToLastBuild: true,
+                keepAll: true,
+                reportDir: 'coverage/lcov-report',
+                reportFiles: 'index.html',
+                reportName: "${appName} Coverage"
+            ])
+            
+        } catch (Exception e) {
+            error "Failed to build ${appName}: ${e.message}"
+        }
+    }
+}
+
+def deployToEnvironment(String environment) {
+    echo "Deploying to ${environment} environment"
+    
+    // Deploy infrastructure components first
+    deployInfrastructure(environment)
+    
+    // Deploy services in dependency order
+    def deploymentOrder = getServiceDeploymentOrder()
+    
+    deploymentOrder.each { service ->
+        deployService(service, environment)
+    }
+    
+    // Run health checks
+    if (!verifyDeploymentHealth(environment)) {
+        error "Deployment to ${environment} failed health checks"
+    }
+}
+
+def deployService(String service, String environment) {
+    def imageTag = env["${service}_IMAGE"] ?: "${REGISTRY}/${PROJECT}/${service}:${env.VERSION}"
+    
+    echo "Deploying ${service} with image: ${imageTag}"
+    
+    // Apply Kubernetes manifests with environment-specific configuration
+    sh """
+        kubectl --context ${KUBE_CONTEXT} apply -f \
+        infrastructure/k8s/${environment}/${service}/deployment.yaml
+    """
+    
+    // Update image
+    sh """
+        kubectl --context ${KUBE_CONTEXT} set image deployment/${service} \
+        ${service}=${imageTag} -n ${PROJECT}-${environment}
+    """
+    
+    // Wait for rollout
+    sh """
+        kubectl --context ${KUBE_CONTEXT} rollout status deployment/${service} \
+        -n ${PROJECT}-${environment} --timeout=600s
+    """
+    
+    // Service-specific post-deployment tasks
+    switch(service) {
+        case 'user-service':
+            runUserServiceMigrations(environment)
+            break
+        case 'product-service':
+            warmProductCache(environment)
+            break
+    }
+}
+
+def runIntegrationTests() {
+    echo "Running integration tests"
+    
+    // Start test environment
+    sh 'docker-compose -f docker-compose.integration.yml up -d'
+    
+    try {
+        // Wait for services to be ready
+        sh './scripts/wait-for-services.sh'
+        
+        // Run integration tests
+        sh 'mvn verify -Pintegration-test -DskipTests=false'
+        
+        // Run API tests
+        sh 'npm test --prefix tests/api-tests'
+        
+    } finally {
+        // Capture logs and cleanup
+        sh 'docker-compose -f docker-compose.integration.yml logs > integration-logs.log'
+        archiveArtifacts artifacts: 'integration-logs.log'
+        sh 'docker-compose -f docker-compose.integration.yml down -v'
+    }
+}
+
+def runDatabaseMigrations() {
+    echo "Running database migrations"
+    
+    // Flyway or Liquibase migrations for each service
+    def servicesWithDb = ['user-service', 'product-service', 'order-service']
+    
+    servicesWithDb.each { service ->
+        try {
+            sh """
+                kubectl --context ${KUBE_CONTEXT} create job --from=cronjob/${service}-migration \
+                ${service}-migration-${env.BUILD_NUMBER} -n ${PROJECT}-production
+            """
+            
+            // Wait for migration completion
+            sh """
+                kubectl --context ${KUBE_CONTEXT} wait --for=condition=complete \
+                job/${service}-migration-${env.BUILD_NUMBER} \
+                -n ${PROJECT}-production --timeout=300s
+            """
+            
+        } catch (Exception e) {
+            echo "Migration failed for ${service}: ${e.message}"
+            // Continue with other migrations, but mark deployment as unstable
+            currentBuild.result = 'UNSTABLE'
+        }
+    }
+}
+
+def monitorDeploymentHealth() {
+    echo "Monitoring deployment health for 30 minutes"
+    
+    timeout(time: 30, unit: 'MINUTES') {
+        parallel(
+            'Application Metrics': {
+                monitorApplicationMetrics()
+            },
+            'Business Metrics': {
+                monitorBusinessMetrics()
+            },
+            'Error Rates': {
+                monitorErrorRates()
+            }
+        )
+    }
+}
+
+def monitorApplicationMetrics() {
+    def alertCount = 0
+    while(true) {
+        try {
+            // Query Prometheus for key metrics
+            def responseTime = queryPrometheus('http_request_duration_seconds:rate5m')
+            def errorRate = queryPrometheus('rate(http_requests_total{status=~"5.."}[5m])')
+            def cpuUsage = queryPrometheus('container_cpu_usage_seconds_total')
+            
+            if (responseTime > 1.0 || errorRate > 0.05) {
+                alertCount++
+                echo "⚠️ Alert #${alertCount}: Response time: ${responseTime}s, Error rate: ${errorRate}"
+                
+                if (alertCount >= 3) {
+                    error "Health check failed: sustained performance degradation"
+                }
+            } else {
+                alertCount = 0
+                echo "✅ Metrics normal: Response time: ${responseTime}s, Error rate: ${errorRate}"
+            }
+            
+            sleep 60 // Check every minute
+            
+        } catch (Exception e) {
+            echo "Monitoring check failed: ${e.message}"
+        }
+    }
+}
+
+def generateComprehensiveReport() {
+    echo "Generating comprehensive deployment report"
+    
+    def report = """
+    🚀 DEPLOYMENT REPORT - ${env.JOB_NAME} #${env.BUILD_NUMBER}
+    ===================================================
+    
+    📊 Build Information:
+    - Version: ${env.VERSION}
+    - Branch: ${env.BRANCH_NAME}
+    - Build: ${env.BUILD_URL}
+    - Duration: ${currentBuild.durationString}
+    - Result: ${currentBuild.currentResult}
+    
+    🔧 Services Deployed:
+    ${generateServiceDeploymentSummary()}
+    
+    ✅ Quality Gates:
+    - Unit Tests: ${testResultsSummary()}
+    - Integration Tests: ${integrationTestSummary()}
+    - Security Scans: ${securityScanSummary()}
+    - Performance: ${performanceTestSummary()}
+    
+    📈 Post-Deployment Metrics:
+    ${generateMetricsSummary()}
+    
+    👥 Approval:
+    - Approved By: ${env.DEPLOY_APPROVER ?: 'N/A'}
+    - Release Notes: ${env.RELEASE_NOTES ?: 'N/A'}
+    
+    🔗 Links:
+    - Application: https://${PROJECT}.company.com
+    - Monitoring: https://grafana.company.com/dashboard/${PROJECT}
+    - Logs: https://kibana.company.com/app/discover#/${PROJECT}
+    """
+    
+    // Write report to file and archive
+    writeFile file: 'deployment-report.md', text: report
+    archiveArtifacts artifacts: 'deployment-report.md'
+    
+    // Send to Slack/Teams
+    sendToSlack(report)
+}
+
+// ========== NOTIFICATION AND CLEANUP ==========
+
+def notifySuccess() {
+    def message = """
+    ✅ SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}
+    Version: ${env.VERSION}
+    Branch: ${env.BRANCH_NAME}
+    Duration: ${currentBuild.durationString}
+    View: ${env.BUILD_URL}
+    """
+    
+    slackSend(
+        channel: env.SLACK_CHANNEL,
+        message: message,
+        color: 'good'
+    )
+}
+
+def triggerRollbackProcedure() {
+    echo "🚨 Initiating automated rollback procedure"
+    
+    try {
+        // Rollback Kubernetes deployments
+        sh """
+            kubectl --context ${KUBE_CONTEXT} rollout undo deployment --all \
+            -n ${PROJECT}-production
+        """
+        
+        // Revert database migrations if needed
+        rollbackDatabaseMigrations()
+        
+        // Notify team
+        slackSend(
+            channel: env.SLACK_CHANNEL,
+            message: "🚨 AUTOMATED ROLLBACK: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+            color: 'danger'
+        )
+        
+    } catch (Exception e) {
+        echo "Rollback procedure failed: ${e.message}"
+        // Critical - need human intervention
+        slackSend(
+            channel: '#production-emergency',
+            message: "🚨 CRITICAL: Rollback failed for ${env.JOB_NAME}. Manual intervention required!",
+            color: 'danger'
+        )
+    }
+}
+
+// ========== HELPER FUNCTIONS ==========
+
+def generateVersion() {
+    def commitHash = sh(
+        script: "git rev-parse --short HEAD",
+        returnStdout: true
+    ).trim()
+    
+    def branchSuffix = env.BRANCH_NAME == 'main' ? '' : "-${env.BRANCH_NAME.replace('/', '-')}"
+    def timestamp = sh(
+        script: "date +%Y%m%d-%H%M%S",
+        returnStdout: true
+    ).trim()
+    
+    return "${timestamp}-${commitHash}${branchSuffix}"
+}
+
+def getAllBackendServices() {
+    return sh(
+        script: "ls services/",
+        returnStdout: true
+    ).trim().split('\n')
+}
+
+// Additional helper functions would be implemented here...

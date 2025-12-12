@@ -1,0 +1,23 @@
+pipeline {
+    agent any
+    stages {
+        stage('Hello') {
+            steps {
+                echo 'Hello, World!'
+            }
+        }
+        stage('Checkout') {
+            steps {
+                echo 'This stage would check out code from git.'
+            }
+        }
+    }
+    post {
+        always {
+            echo 'I will always say this at the end, success or failure.'
+        }
+        success {
+            echo 'The pipeline succeeded!'
+        }
+    }
+}

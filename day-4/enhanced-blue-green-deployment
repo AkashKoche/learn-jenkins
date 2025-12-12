@@ -1,0 +1,43 @@
+stage('Database Migration') {
+    steps {
+        script {
+            // Run database migrations before switching traffic
+            runDatabaseMigration(env.IMAGE_TAG)
+        }
+    }
+}
+
+stage('Performance Test') {
+    steps {
+        script {
+            // Run performance tests against the new deployment
+            def perfResults = runPerformanceTests('production', 'green')
+            
+            // Fail if performance degrades beyond threshold
+            if (perfResults.p95 > 200) { // 200ms threshold
+                error "Performance regression detected: P95 = ${perfResults.p95}ms"
+            }
+        }
+    }
+}
+
+stage('Feature Flag Activation') {
+    steps {
+        script {
+            // Gradually enable features using feature flags
+            activateFeatureFlags(['new-ui': '50%']) // 50% rollout
+        }
+    }
+}
+
+// Monitoring and automated rollback
+stage('Post-Deployment Monitoring') {
+    steps {
+        script {
+            // Monitor key metrics for 15 minutes
+            timeout(time: 15, unit: 'MINUTES') {
+                waitForMetricsStability()
+            }
+        }
+    }
+}

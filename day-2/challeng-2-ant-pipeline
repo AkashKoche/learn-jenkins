@@ -1,0 +1,78 @@
+pipeline {
+    agent any
+    tools {
+        ant 'Ant-Latest'
+        jdk 'JDK11'
+    }
+    parameters {
+        choice(name: 'BUILD_TYPE', 
+               choices: ['compile', 'dist'], 
+               description: 'Choose the Ant target to execute')
+    }
+    stages {
+        stage('Checkout') {
+            steps {
+                echo "This would checkout code from a repository containing build.xml"
+                writeFile file: 'build.xml', text: '''
+<project name="Demo Project" default="compile" basedir=".">
+    <property name="src" location="src"/>
+    <property name="build" location="build"/>
+    
+    <target name="init">
+        <mkdir dir="${build}"/>
+    </target>
+    
+    <target name="compile" depends="init" description="Compile the source code">
+        <echo message="Running COMPILE target for build type: ${build.type}"/>
+        <javac srcdir="${src}" destdir="${build}" includeantruntime="false"/>
+        <echo message="Compilation completed successfully!"/>
+    </target>
+    
+    <target name="dist" depends="compile" description="Create a distribution package">
+        <echo message="Running DIST target for build type: ${build.type}"/>
+        <jar jarfile="dist/myapp-${build.type}.jar" basedir="${build}"/>
+        <echo message="JAR file created successfully!"/>
+    </target>
+    
+    <target name="failing-target" description="This target will always fail">
+        <fail message="This is a simulated build failure for demonstration purposes."/>
+    </target>
+</project>
+'''
+                writeFile file: 'src/HelloWorld.java', text: '''
+public class HelloWorld {
+    public static void main(String[] args) {
+        System.out.println("Hello from the Ant build challenge!");
+    }
+}
+'''
+            }
+        }
+        stage('Build with Ant') {
+            steps {
+                script {
+                    echo "Starting Ant build with target: ${params.BUILD_TYPE}"
+                    def antTarget = params.BUILD_TYPE
+                    def antProperties = [:]
+                    if (params.BUILD_TYPE == 'dist') {
+                        antProperties['build.type'] = 'prod'
+                    }
+                    ant(target: antTarget, 
+                        buildfile: 'build.xml', 
+                        properties: antProperties)
+                }
+            }
+        }
+    }
+    post {
+        always {
+            echo "Ant build phase is finished. Status: ${currentBuild.currentResult}"
+        }
+        failure {
+            echo "❌ BUILD FAILURE! The Ant target '${params.BUILD_TYPE}' failed. Please check the console output for errors."
+        }
+        success {
+            archiveArtifacts artifacts: 'dist/*.jar', fingerprint: true
+        }
+    }
+}

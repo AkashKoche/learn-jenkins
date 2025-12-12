@@ -1,0 +1,203 @@
+pipeline {
+    agent any
+    tools {
+        maven 'M3'
+        jdk 'JDK11'
+    }
+    parameters {
+        choice(
+            name: 'DEPLOY_ENVIRONMENT',
+            choices: ['staging', 'production'],
+            description: 'Target deployment environment'
+        )
+        booleanParam(
+            name: 'ROLLBACK',
+            defaultValue: false,
+            description: 'Check to rollback to previous version'
+        )
+    }
+    environment {
+        DOCKER_REGISTRY = 'myregistry.com'
+        APP_NAME = 'simple-java-app'
+        // These would be stored as credentials
+        KUBE_CONFIG = credentials('kubeconfig')
+    }
+    stages {
+        stage('Build & Test') {
+            steps {
+                git branch: 'main', url: 'https://github.com/jenkins-docs/simple-java-maven-app.git'
+                mvn 'clean package'
+                junit 'target/surefire-reports/*.xml'
+            }
+        }
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    // Determine which version we're building
+                    def version = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
+                    
+                    // Tag with commit hash for unique versioning
+                    env.IMAGE_TAG = "${version}-${env.BUILD_ID}"
+                    
+                    // Build Docker image
+                    sh """
+                        docker build -t ${DOCKER_REGISTRY}/${APP_NAME}:${IMAGE_TAG} .
+                        docker push ${DOCKER_REGISTRY}/${APP_NAME}:${IMAGE_TAG}
+                    """
+                }
+            }
+        }
+        stage('Deploy to Staging') {
+            when {
+                expression { 
+                    params.DEPLOY_ENVIRONMENT == 'staging' || 
+                    params.DEPLOY_ENVIRONMENT == 'production' 
+                }
+            }
+            steps {
+                script {
+                    // Always deploy to staging first for validation
+                    deployToKubernetes('staging', env.IMAGE_TAG, 'blue')
+                    
+                    // Run integration tests against staging
+                    runIntegrationTests('staging')
+                }
+            }
+        }
+        stage('Approval for Production') {
+            when {
+                expression { params.DEPLOY_ENVIRONMENT == 'production' }
+            }
+            steps {
+                script {
+                    // Wait for manual approval
+                    timeout(time: 2, unit: 'HOURS') {
+                        input(
+                            message: 'Deploy to production?',
+                            ok: 'Deploy',
+                            submitterParameter: 'APPROVED_BY'
+                        )
+                    }
+                }
+            }
+        }
+        stage('Blue-Green Production Deployment') {
+            when {
+                expression { 
+                    params.DEPLOY_ENVIRONMENT == 'production' && 
+                    !params.ROLLBACK 
+                }
+            }
+            steps {
+                script {
+                    // Determine current active deployment (blue or green)
+                    def currentColor = getCurrentDeploymentColor('production')
+                    def newColor = currentColor == 'blue' ? 'green' : 'blue'
+                    
+                    echo "Current active: ${currentColor}, Deploying to: ${newColor}"
+                    
+                    // Deploy to inactive environment
+                    deployToKubernetes('production', env.IMAGE_TAG, newColor)
+                    
+                    // Run smoke tests
+                    if (runSmokeTests('production', newColor)) {
+                        // Switch traffic to new deployment
+                        switchTraffic('production', newColor)
+                        echo "✅ Successfully switched traffic to ${newColor}"
+                    } else {
+                        error "Smoke tests failed for ${newColor} deployment"
+                    }
+                }
+            }
+        }
+        stage('Rollback') {
+            when {
+                expression { params.ROLLBACK }
+            }
+            steps {
+                script {
+                    def currentColor = getCurrentDeploymentColor('production')
+                    def previousColor = currentColor == 'blue' ? 'green' : 'blue'
+                    
+                    echo "Rolling back from ${currentColor} to ${previousColor}"
+                    switchTraffic('production', previousColor)
+                }
+            }
+        }
+    }
+    post {
+        always {
+            echo "Deployment pipeline completed with status: ${currentBuild.currentResult}"
+            // Clean up resources
+            cleanUpOldDeployments()
+        }
+        failure {
+            // Automated rollback on failure
+            script {
+                if (params.DEPLOY_ENVIRONMENT == 'production' && !params.ROLLBACK) {
+                    echo "Pipeline failed! Initiating automatic rollback..."
+                    // Implementation would depend on your infrastructure
+                }
+            }
+        }
+    }
+}
+
+// Custom Groovy functions for deployment logic
+def deployToKubernetes(String environment, String imageTag, String color) {
+    echo "Deploying ${imageTag} to ${environment} (${color})"
+    
+    // In real implementation, this would apply Kubernetes manifests
+    sh """
+        kubectl apply -f k8s/${environment}/deployment-${color}.yaml
+        kubectl set image deployment/${APP_NAME}-${color} \
+            ${APP_NAME}=${DOCKER_REGISTRY}/${APP_NAME}:${imageTag} -n ${environment}
+        kubectl rollout status deployment/${APP_NAME}-${color} -n ${environment}
+    """
+}
+
+def getCurrentDeploymentColor(String environment) {
+    // Check which service has 100% traffic
+    def blueWeight = sh(
+        script: "kubectl get service ${APP_NAME} -n ${environment} -o jsonpath='{.spec.selector.color}'",
+        returnStdout: true
+    ).trim()
+    
+    return blueWeight ? 'blue' : 'green'
+}
+
+def switchTraffic(String environment, String color) {
+    echo "Switching 100% traffic to ${color} in ${environment}"
+    
+    // Update service selector to point to new deployment
+    sh """
+        kubectl patch service ${APP_NAME} -n ${environment} \
+            -p '{"spec":{"selector":{"color":"${color}"}}}'
+    """
+}
+
+def runSmokeTests(String environment, String color) {
+    echo "Running smoke tests against ${environment} (${color})"
+    
+    // Implementation depends on your testing framework
+    try {
+        sh "./run-smoke-tests.sh --environment=${environment} --color=${color}"
+        return true
+    } catch (Exception e) {
+        echo "Smoke tests failed: ${e.message}"
+        return false
+    }
+}
+
+def runIntegrationTests(String environment) {
+    echo "Running integration tests against ${environment}"
+    // Similar implementation to smoke tests
+}
+
+def cleanUpOldDeployments() {
+    echo "Cleaning up old deployments (keeping last 5)"
+    // Implementation to remove old Docker images and Kubernetes deployments
+}

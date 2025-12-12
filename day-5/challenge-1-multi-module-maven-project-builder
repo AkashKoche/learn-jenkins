@@ -1,0 +1,205 @@
+pipeline {
+    agent any
+    parameters {
+        choice(name: 'STRATEGY', choices: ['ALL', 'CHANGED', 'SPECIFIC'], description: 'Build strategy')
+        string(name: 'MODULES', defaultValue: '', description: 'Specific modules (comma-separated)')
+    }
+    stages {
+        stage('Analyze Repository') {
+            steps {
+                script {
+                    // Complex problem: Dynamically discover Maven modules
+                    def modules = discoverMavenModules()
+                    env.MODULE_COUNT = modules.size()
+                    echo "Discovered ${modules.size()} modules: ${modules.join(', ')}"
+                    
+                    // Determine which modules to build based on strategy
+                    def modulesToBuild = determineBuildModules(modules, params.STRATEGY, params.MODULES)
+                    env.BUILD_MODULES = modulesToBuild.join(',')
+                    
+                    // Create dynamic stages
+                    createDynamicStages(modulesToBuild)
+                }
+            }
+        }
+    }
+}
+
+// Advanced Groovy function to discover Maven modules
+def discoverMavenModules() {
+    def modules = []
+    
+    try {
+        // Method 1: Parse pom.xml for modules
+        if (fileExists('pom.xml')) {
+            def pom = readMavenPom(file: 'pom.xml')
+            if (pom.modules) {
+                modules = pom.modules
+            } else {
+                // Method 2: Look for child pom.xml files
+                def findResult = sh(
+                    script: "find . -name 'pom.xml' -not -path './pom.xml' | sed 's|./||' | sed 's|/pom.xml||' | sort",
+                    returnStdout: true
+                ).trim()
+                
+                if (findResult) {
+                    modules = findResult.split('\n') as List
+                }
+            }
+        }
+    } catch (Exception e) {
+        echo "Warning: Could not auto-discover modules: ${e.message}"
+        // Method 3: Check for common module directories
+        def dirs = ['api', 'service', 'web', 'core', 'common']
+        dirs.each { dir ->
+            if (fileExists("${dir}/pom.xml")) {
+                modules << dir
+            }
+        }
+    }
+    
+    return modules.unique()
+}
+
+// Determine which modules need building
+def determineBuildModules(List allModules, String strategy, String specificModules) {
+    switch(strategy) {
+        case 'ALL':
+            return allModules
+        case 'CHANGED':
+            return findChangedModules(allModules)
+        case 'SPECIFIC':
+            return specificModules ? specificModules.split(',') : allModules
+        default:
+            return allModules
+    }
+}
+
+// Git-based changed module detection
+def findChangedModules(List allModules) {
+    def changedModules = []
+    
+    // Get changed files in last commit
+    def changedFiles = sh(
+        script: "git diff --name-only HEAD~1 HEAD",
+        returnStdout: true
+    ).trim().split('\n')
+    
+    allModules.each { module ->
+        // Check if any changed file belongs to this module
+        def moduleChanged = changedFiles.any { file ->
+            file.startsWith("${module}/") || file == "${module}/pom.xml"
+        }
+        if (moduleChanged) {
+            changedModules << module
+        }
+    }
+    
+    // Always build root if root files changed
+    def rootFilesChanged = changedFiles.any { file ->
+        !file.contains('/') || file in ['pom.xml', 'Jenkinsfile']
+    }
+    if (rootFilesChanged) {
+        changedModules.addAll(allModules) // Build all if root changed
+    }
+    
+    return changedModules.unique()
+}
+
+// Create stages dynamically based on modules
+def createDynamicStages(List modulesToBuild) {
+    def parallelStages = [:]
+    
+    modulesToBuild.each { module ->
+        parallelStages["Build-${module}"] = {
+            stage("Build ${module}") {
+                echo "Building module: ${module}"
+                
+                dir(module) {
+                    // Complex: Handle different build types
+                    def buildResult = buildMavenModule(module)
+                    
+                    // Store results for aggregation
+                    env["${module}_BUILD_RESULT"] = buildResult.status
+                    env["${module}_TEST_COVERAGE"] = buildResult.coverage
+                }
+                
+                // Post-build analysis
+                analyzeModuleBuild(module)
+            }
+        }
+    }
+    
+    // Execute all module builds in parallel
+    parallel parallelStages
+}
+
+// Advanced Maven build with result capture
+def buildMavenModule(String module) {
+    def result = [:]
+    
+    try {
+        // Build with specific profiles based on module type
+        def profiles = determineMavenProfiles(module)
+        
+        sh "mvn clean install -pl ${module} -am ${profiles}"
+        
+        // Parse test results
+        def testReport = readTestResults(module)
+        result.status = 'SUCCESS'
+        result.coverage = testReport.coverage
+        result.testCount = testReport.totalTests
+        
+    } catch (Exception e) {
+        result.status = 'FAILED'
+        result.error = e.message
+        throw e
+    }
+    
+    return result
+}
+
+// Dynamic profile determination
+def determineMavenProfiles(String module) {
+    def profiles = []
+    
+    // Add profiles based on module characteristics
+    if (module.contains('api')) {
+        profiles << 'api-module'
+    }
+    if (module.contains('web')) {
+        profiles << 'web-module'
+    }
+    
+    // Add environment-specific profiles
+    if (env.BRANCH_NAME == 'develop') {
+        profiles << 'development'
+    }
+    
+    return profiles ? "-P${profiles.join(',')}" : ''
+}
+
+// Complex test result parsing
+def readTestResults(String module) {
+    def report = [totalTests: 0, passed: 0, failed: 0, coverage: 0.0]
+    
+    try {
+        def surefireFile = "${module}/target/surefire-reports/*.xml"
+        if (fileExists(surefireFile)) {
+            junit surefireFile
+            
+            // Parse XML to get detailed results (alternative approach)
+            def xmlReport = readFile(file: surefireFile)
+            def tests = (xmlReport =~ 'tests="(\\d+)"')[0][1] as Integer
+            report.totalTests = tests
+        }
+        
+        // Parse JaCoCo coverage if available
+        report.coverage = parseCoverageReport(module)
+        
+    } catch (Exception e) {
+        echo "Could not parse test results for ${module}: ${e.message}"
+    }
+    
+    return report
+}

@@ -1,0 +1,48 @@
+pipeline {
+    agent any
+    stages {
+        stage('Deploy with Retry') {
+            steps {
+                script {
+                    int retryCount = 0
+                    int maxRetries = 3
+                    boolean deployed = false
+                    
+                    while (!deployed && retryCount < maxRetries) {
+                        try {
+                            echo "Attempting deployment (Attempt ${retryCount + 1})"
+                            // Simulate deployment that might fail
+                            if (retryCount < 2) {
+                                error "Simulated deployment failure"
+                            }
+                            echo "Deployment successful!"
+                            deployed = true
+                        } catch (Exception e) {
+                            retryCount++
+                            echo "Deployment failed: ${e.message}"
+                            if (retryCount < maxRetries) {
+                                echo "Retrying in 10 seconds..."
+                                sleep 10
+                            } else {
+                                echo "Max retries exceeded. Failing build."
+                                throw e
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Conditional Rollback') {
+            when {
+                expression { currentBuild.result == 'FAILURE' }
+            }
+            steps {
+                script {
+                    echo "Initiating automatic rollback due to deployment failure"
+                    // Add rollback logic here
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,83 @@
+pipeline {
+    agent any
+    tools {
+        maven 'M3'
+        jdk 'JDK11'
+        sonarQubeScanner 'sonar-scanner'
+    }
+    environment {
+        // These would typically come from Jenkins credentials
+        SONAR_HOST_URL = 'http://localhost:9000'
+        // Reference a token stored securely in Jenkins
+        // SONAR_AUTH_TOKEN = credentials('sonar-token')
+    }
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'main', url: 'https://github.com/jenkins-docs/simple-java-maven-app.git'
+            }
+        }
+        stage('Build & Test') {
+            steps {
+                mvn 'clean compile test'
+            }
+            post {
+                always {
+                    junit 'target/surefire-reports/*.xml'
+                }
+            }
+        }
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('sonar-server') {
+                    // Using Maven for analysis (alternative: use sonar-scanner directly)
+                    sh 'mvn sonar:sonar \
+                        -Dsonar.projectKey=simple-java-app \
+                        -Dsonar.projectName="Simple Java Application" \
+                        -Dsonar.host.url=$SONAR_HOST_URL'
+                    // For non-Maven projects, use:
+                    // sonarQubeScanner 'sonar-scanner -Dsonar.projectKey=my-project -Dsonar.sources=src'
+                }
+            }
+        }
+        stage("Quality Gate") {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    // This step waits for SonarQube analysis to complete and checks the Quality Gate status
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+        stage('Security Scan') {
+            steps {
+                script {
+                    echo "Running dependency vulnerability check..."
+                    // OWASP Dependency Check (we'll set this up next)
+                    sh 'mvn org.owasp:dependency-check-maven:check -Dformat=HTML'
+                }
+            }
+            post {
+                always {
+                    // Archive dependency check report
+                    publishHTML([
+                        allowMissing: false,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'target',
+                        reportFiles: 'dependency-check-report.html',
+                        reportName: 'Dependency Check Report'
+                    ])
+                }
+            }
+        }
+    }
+    post {
+        failure {
+            echo "Pipeline failed! Check SonarQube quality gate or test results."
+            // Send notification to Slack/Teams/Email
+        }
+        success {
+            echo "All quality checks passed! Ready for deployment."
+        }
+    }
+}

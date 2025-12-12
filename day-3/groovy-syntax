@@ -1,0 +1,17 @@
+// Collections and iteration
+def languages = ['Java', 'Python', 'Groovy', 'JavaScript']
+languages.each { lang ->
+    echo "Building project in ${lang}"
+}
+
+// Maps for configuration
+def buildConfig = [
+    'dev':  ['version': '1.0.0-SNAPSHOT', 'server': 'dev-server'],
+    'prod': ['version': '1.0.0', 'server': 'prod-server']
+]
+
+// String interpolation and methods
+def branchName = "feature/new-auth"
+if (branchName.startsWith('feature/')) {
+    echo "This is a feature branch: ${branchName.replace('feature/', '')}"
+}

@@ -1,0 +1,76 @@
+pipeline {
+    agent any
+    stages {
+        stage('Analyze Changes') {
+            steps {
+                script {
+                    // Get changed files since last successful build
+                    def changedFiles = getChangedFiles()
+                    def changedModules = identifyChangedModules(changedFiles)
+                    
+                    echo "Changed modules: ${changedModules}"
+                    env.CHANGED_MODULES = changedModules.join(',')
+                }
+            }
+        }
+        
+        stage('Selective Build') {
+            steps {
+                script {
+                    def modules = env.CHANGED_MODAGES.split(',').toList()
+                    if (modules.empty) {
+                        echo "No changes detected. Skipping build."
+                        currentBuild.result = 'SUCCESS'
+                        return
+                    }
+                    
+                    def buildStages = [:]
+                    modules.each { module ->
+                        buildStages["Build-${module}"] = {
+                            buildModule(module)
+                        }
+                    }
+                    
+                    parallel buildStages
+                }
+            }
+        }
+    }
+}
+
+def getChangedFiles() {
+    // Get changes since last successful build
+    def lastSuccess = currentBuild.rawBuild.getPreviousSuccessfulBuild()
+    if (lastSuccess) {
+        return sh(
+            script: "git diff --name-only ${lastSuccess.commitId} HEAD",
+            returnStdout: true
+        ).trim().split('\n')
+    } else {
+        return sh(
+            script: "git diff --name-only HEAD~1 HEAD",
+            returnStdout: true
+        ).trim().split('\n')
+    }
+}
+
+def identifyChangedModules(List changedFiles) {
+    def modules = [] as Set
+    
+    changedFiles.each { file ->
+        // Simple logic: module is the first directory
+        def parts = file.split('/')
+        if (parts.size() > 1) {
+            modules.add(parts[0])
+        }
+    }
+    
+    return modules.toList()
+}
+
+def buildModule(String module) {
+    dir(module) {
+        sh 'mvn clean compile test'
+        junit 'target/surefire-reports/*.xml'
+    }
+}

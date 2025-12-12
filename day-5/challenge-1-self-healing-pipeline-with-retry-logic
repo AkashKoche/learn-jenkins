@@ -1,0 +1,77 @@
+def executeWithRetry(Closure operation, int maxRetries = 3, List retryableErrors = []) {
+    def retryCount = 0
+    def lastException = null
+    
+    while (retryCount <= maxRetries) {
+        try {
+            if (retryCount > 0) {
+                echo "Retry attempt ${retryCount}/${maxRetries} after waiting..."
+                sleep(Math.pow(2, retryCount) as int) // Exponential backoff
+            }
+            
+            return operation.call()
+            
+        } catch (Exception e) {
+            lastException = e
+            retryCount++
+            
+            // Check if error is retryable
+            if (!isRetryableError(e, retryableErrors) || retryCount > maxRetries) {
+                throw e
+            }
+            
+            echo "Operation failed with retryable error: ${e.message}"
+            performRecoveryActions(e)
+        }
+    }
+    
+    throw lastException
+}
+
+def isRetryableError(Exception e, List retryablePatterns) {
+    def errorMessage = e.message.toLowerCase()
+    
+    def retryableMessages = [
+        'connection timeout',
+        'network error',
+        'temporary failure',
+        'socket exception',
+        'http 5xx',
+        'rate limit'
+    ]
+    
+    retryableMessages.addAll(retryablePatterns)
+    
+    return retryableMessages.any { pattern -> errorMessage.contains(pattern) }
+}
+
+def performRecoveryActions(Exception e) {
+    echo "Performing recovery actions..."
+    
+    // Clear Maven repository cache for download issues
+    if (e.message.contains('download') || e.message.contains('repository')) {
+        sh 'mvn dependency:purge-local-repository -DactTransitively=false'
+    }
+    
+    // Restart Docker for container issues
+    if (e.message.contains('docker') || e.message.contains('container')) {
+        sh 'sudo systemctl restart docker'
+        sleep 30
+    }
+    
+    // Clear workspace for file lock issues
+    if (e.message.contains('lock') || e.message.contains('permission')) {
+        sh 'find . -name "*.lock" -delete'
+    }
+}
+
+// Usage in pipeline
+stage('Resilient Deployment') {
+    steps {
+        script {
+            executeWithRetry({
+                sh 'mvn deploy -DaltDeploymentRepository=snapshots::default::http://repo.company.com/snapshots'
+            }, 3, ['connection refused', 'timeout'])
+        }
+    }
+}

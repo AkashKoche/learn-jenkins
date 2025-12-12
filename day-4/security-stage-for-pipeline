@@ -1,0 +1,18 @@
+stage('Security Scan') {
+    steps {
+        script {
+            catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                sh 'mvn org.owasp:dependency-check-maven:check'
+            }
+        }
+    }
+    post {
+        always {
+            dependencyCheckPublisher(
+                pattern: '**/dependency-check-report.xml',
+                unstableTotalHigh: 1,  // Mark as unstable if high vulnerabilities found
+                failedTotalHigh: 5     // Mark as failed if 5+ high vulnerabilities found
+            )
+        }
+    }
+}
