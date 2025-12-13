@@ -7,7 +7,7 @@
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "test:jest": "jest --runInBand",
-    "test:mocha": "mocha --exit",
+    "test:mocha": "mocha test/mocha --exit",
     "test": "npm run test:jest && npm run test:mocha"
   },
   "keywords": ["express","node","jest","mocha","supertest"],
