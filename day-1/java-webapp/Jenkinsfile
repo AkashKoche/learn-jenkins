@@ -166,8 +166,9 @@ pipeline {
             cleanWs()
             
             // Update build description
-            currentBuild.description = "Branch: ${BRANCH_NAME} | Commit: ${COMMIT_HASH}"
-            
+            script {
+	        currentBuild.description = "Branch: ${BRANCH_NAME} | Commit: ${COMMIT_HASH}"
+            }
             // Build metrics
             script {
                 def duration = currentBuild.duration
