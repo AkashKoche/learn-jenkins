@@ -162,9 +162,11 @@ pipeline {
     
     post {
         always {
-            script {
+            node {
+                script {
             // Clean workspace
-            cleanWs()
+                    cleanWs()
+                }
             }
             // Update build description
             script {
@@ -185,8 +187,8 @@ pipeline {
                 Build #${env.BUILD_NUMBER} completed successfully!
                 
                 Details:
-                - Branch: ${BRANCH_NAME}
-                - Commit: ${COMMIT_HASH}
+                - Branch: ${env.BRANCH_NAME}
+                - Commit: ${env.COMMIT_HASH}
                 - Duration: ${currentBuild.durationString}
                 - URL: ${env.BUILD_URL}
                 """,
@@ -201,8 +203,8 @@ pipeline {
                 Build #${env.BUILD_NUMBER} failed!
                 
                 Details:
-                - Branch: ${BRANCH_NAME}
-                - Commit: ${COMMIT_HASH}
+                - Branch: ${env.BRANCH_NAME}
+                - Commit: ${env.COMMIT_HASH}
                 - Duration: ${currentBuild.durationString}
                 - URL: ${env.BUILD_URL}
                 
