@@ -162,7 +162,7 @@ pipeline {
     
     post {
         always {
-            node {
+            node('any') {
                 script {
             // Clean workspace
                     cleanWs()
