@@ -162,12 +162,13 @@ pipeline {
     
     post {
         always {
+            script {
             // Clean workspace
             cleanWs()
-            
+            }
             // Update build description
             script {
-	        currentBuild.description = "Branch: ${BRANCH_NAME} | Commit: ${COMMIT_HASH}"
+	        currentBuild.description = "Branch: ${env.BRANCH_NAME} | Commit: ${COMMIT_HASH}"
             }
             // Build metrics
             script {
