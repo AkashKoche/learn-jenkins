@@ -1,0 +1,41 @@
+//Pipeline Debugging Problem: You inherit a broken pipeline with multiple issues. Fix it!
+
+// BROKEN PIPELINE - Fix all issues
+pipeline(
+    agent any
+    paramters {
+        string name: 'VERSION', default: '1.0'
+    }
+    
+    stages {
+        Stage('Checkout') {
+            steps
+                git 'https://github.com/AkashKoche/learn-jenkins.git'
+            }
+        }
+        
+        stage('Build') {
+            steps {
+                sh 'mvn clean package'
+            post {
+                success
+                    echo 'Build successful!'
+                }
+            }
+        }
+        
+        stage('Test') {
+            steps {
+                sh 'mvn test'
+            }
+        }
+    }
+    
+    post {
+        failure {
+            mail to: 'koche.akash@gmail.com',
+                 subject: 'Build Failed',
+                 body: 'Please check the build'
+        }
+    }
+)

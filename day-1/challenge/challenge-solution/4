@@ -1,0 +1,159 @@
+How Jenkins Multibranch Pipeline Works
+
+Key idea
+Jenkins automatically:
+
+Scans a Git repo
+
+Detects new branches / PRs
+
+Runs Jenkinsfile from each branch
+
+Required Jenkins Setup
+
+✅ Multibranch Pipeline job
+✅ SCM: Git / GitHub / GitLab
+✅ Webhook or periodic scan
+Repo
+ ├── main
+ ├── develop
+ ├── feature/login
+ ├── feature/payment
+ └── Jenkinsfile
+
+Production-Ready Jenkinsfile (Multibranch)
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        skipDefaultCheckout()
+    }
+
+    environment {
+        APP_NAME = "myapp"
+        REGISTRY = "docker.io/company"
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Test') {
+            when {
+                not { branch 'main' }
+            }
+            steps {
+                sh 'mvn test'
+            }
+        }
+
+        stage('Quality Gates') {
+            when {
+                branch 'main'
+            }
+            steps {
+                sh 'mvn test sonar:sonar'
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                sh '''
+                docker build -t $REGISTRY/$APP_NAME:${BRANCH_NAME}-${BUILD_NUMBER} .
+                '''
+            }
+        }
+
+        stage('Deploy') {
+
+            when {
+                anyOf {
+                    branch 'main'
+                    branch pattern: "feature/.*", comparator: "REGEXP"                 }
+            }
+
+            steps {
+                script {
+                    if (env.BRANCH_NAME == 'main') {
+                        sh './deploy/prod.sh'
+                    } else {
+                        sh "./deploy/feauture,sh ${BRANCH_NAME}"
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+
+        success {
+            echo "Pipeline completed for ${BRANCH_NAME}"
+        }
+
+        cleanup {
+            script {
+                if (env.BRANCH_NAME.startsWith('feature/')) {
+                    sh "./deploy/cleanup.sh ${BRANCH_NAME}"
+                }
+            }
+        }
+    }
+}
+
+Auto-Delete Feature Branch Deployments
+📌 Triggered When:
+
+Feature branch is deleted
+
+Jenkins job is cleaned
+
+Build finishes
+
+//cleanup.sh (Kubernetes Example)
+#!/bin/bash
+BRANCH=$1
+NAMESPACE=$(echo $BRANCH | tr '/' '-')
+
+kubectl delete namespace $NAMESPACE --ignore-not-found
+
+
+//Feature Deployment Script
+#!/bin/bash
+BRANCH=$1
+NAMESPACE=$(echo $BRANCH | tr '/' '-')
+
+kubectl create namespace $NAMESPACE || true
+kubectl apply -n $NAMESPACE -f k8s/
+
+
+//Quality Gates for main Branch SonarQube (Blocking Build)
+stage('Quality Gate') {
+    when {
+        branch 'main'
+    }
+    steps {
+        timeout(time: 5, unit: 'MINUTES') {
+            waitForQualityGate abortPipeline: true
+        }
+    }
+}
+🚫 Build fails if quality gate fails
+
+
+
+//How Branch Detection Works Automatically
+Jenkins Configuration
+
+Enable “Scan Multibranch Pipeline Triggers”
+
+Or use webhook:
+GitHub → Webhook → push, delete
+Branch Deletion Event
+Jenkins removes branch job
+post { cleanup } runs
+Feature environment deleted

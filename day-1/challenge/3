@@ -1,0 +1,13 @@
+Challenge 3: Performance Optimization
+
+Scenario: A pipeline takes 45 minutes to complete. Optimize it to under 20 minutes.
+
+Requirements:
+
+    Parallelize test execution
+
+    Implement dependency caching
+
+    Use incremental builds
+
+    Optimize Docker layer caching

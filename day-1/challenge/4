@@ -1,0 +1,11 @@
+Challenge 4: Multi-branch Pipeline
+
+Create a pipeline that:
+
+    Automatically detects new branches
+
+    Runs different strategies for feature vs main branches
+
+    Implements quality gates for main branch
+
+    Auto-deletes feature branch deployments

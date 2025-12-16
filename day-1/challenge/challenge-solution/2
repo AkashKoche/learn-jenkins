@@ -1,0 +1,52 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(
+             name: 'VERSION',
+             defaultValue: '1.0',
+             description: 'Application version'
+        )
+    }
+    
+
+    stages {
+
+        stage('Checkout') {
+            steps
+                git url: 'https://github.com/AkashKoche/learn-jenkins.git', branch: 'main'
+            }
+        }
+        
+        stage('Build') {
+            steps {
+                sh 'mvn clean package'
+            }
+            post {
+                success {
+                    echo 'Build successful!'
+                }
+                failure {
+                    echo 'Build failed!'
+                }
+            }
+        }
+        
+        stage('Test') {
+            steps {
+                sh 'mvn test'
+            }
+        }
+    }
+    
+    post {
+        failure {
+            echo 'Sending failure notification'
+            mail(
+                to: 'koche.akash@gmail.com',
+                subject: "Build Failed: ${env.JOB_NAME} ${env.BUILD_NUMBER}",
+                body: "Check Jenkins job: ${env.BUILD_URL}"
+            )
+        }
+    }
+}

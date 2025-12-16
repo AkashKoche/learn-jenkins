@@ -4,7 +4,7 @@ pipeline {
         stage('Welcome') {
             steps {
                 script {
-                    def repoUrl = 'https://github.com/jenkins-docs/simple-java-maven-app.git'
+                    def repoUrl = '<GITHUB_URL>'
                     def branchName = 'main'
                     echo "Welcome! Starting build for repository: ${repoUrl} on branch: ${branchName}"
                 }
@@ -12,12 +12,12 @@ pipeline {
         }
         stage('Checkout Code') {
             steps {
-                git-branch: 'main', url: 'https://github.com/jenkins-docs/simple-java-maven-app.git'
+                git branch: 'main', url: '<GITHUB_URL>'
             }
         }
         stage('Archive Files') {
             steps {
-                archiveArtifacts artifacts: '**/*.txt, fingerprint: true'
+                archiveArtifacts artifacts: 'target/*.jar', fingerprint: true'
             }
         }
     }
