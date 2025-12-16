@@ -170,7 +170,7 @@ pipeline {
             }
             // Update build description
             script {
-	        currentBuild.description = "Branch: ${env.BRANCH_NAME} | Commit: ${COMMIT_HASH}"
+	        currentBuild.description = "Branch: ${env.BRANCH_NAME} | Commit: ${env.COMMIT_HASH}"
             }
             // Build metrics
             script {
